@@ -1,0 +1,8 @@
+.venv/
+.env
+__pycache__/
+*.egg-info/
+out/
+trace*.json
+.pytest_cache/
+.claude/settings.local.json
