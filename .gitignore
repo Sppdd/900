@@ -6,3 +6,5 @@ out/
 trace*.json
 .pytest_cache/
 .claude/settings.local.json
+Beacon.txt
+useless ideas/
