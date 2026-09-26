@@ -1,0 +1,7 @@
+name = "test-writer"
+description = "Measures coverage, writes focused tests for untested code paths, and returns a patch whose tests all pass."
+tools = ["bash", "read_file", "write_file", "edit_file", "run_tests", "checkpoint", "rollback", "report"]
+max_steps = 35
+toolchain = ["pip install -q pytest pytest-cov"]
+verify = "tests_pass"
+preflight = ["python -m pytest -q --cov=. --cov-report=term-missing -p no:cacheprovider"]

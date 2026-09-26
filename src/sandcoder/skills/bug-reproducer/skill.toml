@@ -1,0 +1,6 @@
+name = "bug-reproducer"
+description = "Turns a bug report into the smallest failing test that reproduces it, confirmed to fail for the right reason."
+tools = ["bash", "read_file", "write_file", "edit_file", "run_tests", "checkpoint", "rollback", "report"]
+max_steps = 30
+toolchain = ["pip install -q pytest"]
+verify = "none"

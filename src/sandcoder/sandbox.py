@@ -14,9 +14,11 @@ and exists for offline tests and demos only.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import io
 import os
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import time
@@ -72,17 +74,55 @@ def safe_relpath(path: str) -> str:
     return "/".join(parts)
 
 
-def collect_local_files(root: Path) -> dict[str, tuple[bytes, int]]:
-    """Read a local directory into {relpath: (content, mode)}, skipping caches and VCS dirs."""
+SECRET_PATTERNS = (
+    ".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ed25519*", "id_ecdsa*",
+    ".npmrc", ".pypirc", ".netrc", "*.tfstate", "*.tfstate.*", "credentials*.json", "*secret*",
+)
+SECRET_ALLOW = (".env.example", ".env.sample", ".env.template")
+MAX_UPLOAD_FILE_BYTES = 5 * 1024 * 1024
+
+
+def is_secret_path(rel: str) -> bool:
+    """True for files that must never leave the user's machine (keys, .env, tfstate...)."""
+    name = PurePosixPath(rel).name
+    if name in SECRET_ALLOW:
+        return False
+    return any(fnmatch.fnmatch(name, pat) for pat in SECRET_PATTERNS)
+
+
+def _git_listed_files(root: Path) -> list[str] | None:
+    """Tracked + untracked-but-not-ignored files, or None if ``root`` isn't a git work tree."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z"],
+            capture_output=True, check=True, timeout=30,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return [p for p in out.decode().split("\0") if p]
+
+
+def collect_local_files(root: Path | str) -> dict[str, tuple[bytes, int]]:
+    """Read a project into {relpath: (content, mode)} for upload.
+
+    Respects .gitignore when ``root`` is in a git repo, skips caches/VCS dirs and
+    oversized files, and ALWAYS drops secret-looking files (see ``SECRET_PATTERNS``).
+    """
+    root = Path(root)
+    listed = _git_listed_files(root)
+    if listed is None:
+        listed = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            listed += [(Path(dirpath) / n).relative_to(root).as_posix() for n in filenames]
     out: dict[str, tuple[bytes, int]] = {}
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-        for name in filenames:
-            full = Path(dirpath) / name
-            if full.is_symlink() or not full.is_file():
-                continue
-            rel = full.relative_to(root).as_posix()
-            out[rel] = (full.read_bytes(), full.stat().st_mode & 0o777)
+    for rel in listed:
+        if is_secret_path(rel) or any(part in SKIP_DIRS for part in PurePosixPath(rel).parts):
+            continue
+        full = root / rel
+        if full.is_symlink() or not full.is_file() or full.stat().st_size > MAX_UPLOAD_FILE_BYTES:
+            continue
+        out[rel] = (full.read_bytes(), full.stat().st_mode & 0o777)
     return out
 
 
@@ -108,6 +148,21 @@ class Sandbox(ABC):
     @abstractmethod
     async def write(self, snap: Snapshot, files: dict[str, bytes]) -> Snapshot:
         """Return a new snapshot with ``files`` written into the workspace."""
+
+    @abstractmethod
+    async def add_files(self, snap: Snapshot, files: dict[str, tuple[bytes, int]]) -> Snapshot:
+        """Like ``write`` but with explicit file modes (used for project uploads)."""
+
+    async def toolchain(
+        self, image: str, setup: list[str], *, tag: str | None = None, timeout: float = 900
+    ) -> Snapshot:
+        """An image with ``setup`` commands applied. Backends may cache it under ``tag``."""
+        snap = await self.start(image)
+        for cmd in setup:
+            res, snap = await self.exec(snap, cmd, timeout=timeout)
+            if not res.ok:
+                raise SandboxError(f"toolchain setup failed: {cmd}\n{res.stdout}\n{res.stderr}")
+        return snap
 
     @abstractmethod
     async def read(self, snap: Snapshot, path: str) -> bytes:
@@ -187,18 +242,34 @@ class ContreeSandbox(Sandbox):
         return [(str(i.uuid), i.tag) for i in images]
 
     async def start(self, image: str, files: dict[str, tuple[bytes, int]] | None = None) -> Snapshot:
-        from contree_sdk.utils.models.file import UploadFileSpec
-
         # oci() returns an already-imported image by tag, importing from the registry if needed.
         base = await self._sdk.images.oci(image)
         img = await base.run(shell=f"mkdir -p {self.workdir}", disposable=False)
-        if files:
-            specs = {
-                f"{self.workdir}/{safe_relpath(rel)}": UploadFileSpec(source=data, mode=mode)
-                for rel, (data, mode) in files.items()
-            }
-            img = await img.apply_files(files=specs)
-        return self._snap(img)
+        snap = self._snap(img)
+        return await self.add_files(snap, files) if files else snap
+
+    async def add_files(self, snap: Snapshot, files: dict[str, tuple[bytes, int]]) -> Snapshot:
+        from contree_sdk.utils.models.file import UploadFileSpec
+
+        specs = {
+            f"{self.workdir}/{safe_relpath(rel)}": UploadFileSpec(source=data, mode=mode)
+            for rel, (data, mode) in files.items()
+        }
+        return self._snap(await snap.handle.apply_files(files=specs))
+
+    async def toolchain(
+        self, image: str, setup: list[str], *, tag: str | None = None, timeout: float = 900
+    ) -> Snapshot:
+        # Snapshots are immutable, so a tagged toolchain image can be reused by every later run.
+        if tag:
+            try:
+                return self._snap(await self._sdk.images.use(tag, strict=True))
+            except Exception:  # not built yet
+                pass
+        snap = await super().toolchain(image, setup, timeout=timeout)
+        if tag:
+            await snap.handle.tag_as(tag)
+        return snap
 
     async def exec(
         self, snap: Snapshot, command: str, *, timeout: float = DEFAULT_TIMEOUT, persist: bool = True
@@ -284,7 +355,12 @@ class LocalSandbox(Sandbox):
 
     async def start(self, image: str, files: dict[str, tuple[bytes, int]] | None = None) -> Snapshot:
         d = self._new_dir(None)
-        for rel, (data, mode) in (files or {}).items():
+        snap = Snapshot(id=d.name, handle=d)
+        return await self.add_files(snap, files) if files else snap
+
+    async def add_files(self, snap: Snapshot, files: dict[str, tuple[bytes, int]]) -> Snapshot:
+        d = self._new_dir(snap)
+        for rel, (data, mode) in files.items():
             p = d / safe_relpath(rel)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(data)

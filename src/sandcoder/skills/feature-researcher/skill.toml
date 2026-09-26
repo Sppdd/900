@@ -1,0 +1,7 @@
+name = "feature-researcher"
+description = "Researches 2-3 ways to build a feature, prototypes each on its own checkpoint, and recommends the one that actually works."
+tools = ["bash", "read_file", "write_file", "edit_file", "run_tests", "checkpoint", "rollback", "report"]
+host_tools = ["web_search"]
+max_steps = 45
+toolchain = ["pip install -q pytest"]
+verify = "tests_pass"

@@ -1,0 +1,11 @@
+name = "security-auditor"
+description = "Runs SAST and dependency scanners, then tries to prove each serious finding with a failing proof-of-concept test."
+tools = ["bash", "read_file", "write_file", "edit_file", "checkpoint", "rollback", "report"]
+max_steps = 30
+toolchain = ["pip install -q semgrep bandit pip-audit"]
+verify = "none"
+preflight = [
+  "bandit -r . -q -f txt -x ./tests,./.git",
+  "semgrep scan --config p/python --quiet --metrics=off --timeout 60 .",
+  "test -f requirements.txt && pip-audit -r requirements.txt --progress-spinner off || echo 'no requirements.txt'",
+]

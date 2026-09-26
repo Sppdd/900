@@ -10,7 +10,7 @@ from typing import Any
 
 from sandcoder.llm import ChatModel
 from sandcoder.sandbox import Sandbox, Snapshot
-from sandcoder.tools import TOOL_SCHEMAS, Workspace, clip
+from sandcoder.tools import HostTool, Workspace, clip, schemas_for
 
 SYSTEM_PROMPT = """\
 You are an autonomous software engineer working inside an isolated Linux sandbox.
@@ -48,6 +48,9 @@ class AgentResult:
     test_output: str
     steps: list[Step] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
+    report: dict[str, Any] | None = None
+    audit: list[dict[str, Any]] = field(default_factory=list)
+    evidence: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -57,6 +60,8 @@ class AgentResult:
             "tests_passed": self.tests_passed,
             "test_output": self.test_output,
             "usage": self.usage,
+            "report": self.report,
+            "audit": self.audit,
             "steps": [s.__dict__ for s in self.steps],
         }
 
@@ -71,6 +76,9 @@ class CodingAgent:
         max_steps: int = 40,
         system_prompt: str = SYSTEM_PROMPT,
         on_step: Callable[[Step], None] | None = None,
+        tools: list[str] | None = None,
+        host_tools: dict[str, HostTool] | None = None,
+        use_guard: bool = True,
     ) -> None:
         self.model = model
         self.sandbox = sandbox
@@ -78,9 +86,17 @@ class CodingAgent:
         self.max_steps = max_steps
         self.system_prompt = system_prompt
         self.on_step = on_step
+        self.tools = tools  # None = all built-in tools; a list enables a subset (+ "report")
+        self.host_tools = host_tools or {}
+        self.use_guard = use_guard
+        self.schemas = schemas_for(tools, self.host_tools)
+        self.end_tool = "report" if tools is not None and "report" in tools else "finish"
 
     async def run(self, task: str, snapshot: Snapshot) -> AgentResult:
-        ws = Workspace(self.sandbox, snapshot, test_command=self.test_command)
+        ws = Workspace(
+            self.sandbox, snapshot, test_command=self.test_command,
+            host_tools=self.host_tools, use_guard=self.use_guard,
+        )
         user = f"Task:\n{task}"
         if self.test_command:
             user += f"\n\nThe task is verified by running: `{self.test_command}`"
@@ -94,14 +110,14 @@ class CodingAgent:
         finished = False
 
         for _ in range(self.max_steps):
-            reply = await self.model.complete(messages, TOOL_SCHEMAS)
+            reply = await self.model.complete(messages, self.schemas)
             for k, v in reply.usage.items():
                 usage[k] = usage.get(k, 0) + v
             messages.append(reply.as_message())
 
             if not reply.tool_calls:
                 # Models sometimes answer in prose; nudge back into the tool loop.
-                messages.append({"role": "user", "content": "Continue using tools, or call finish when done."})
+                messages.append({"role": "user", "content": f"Continue using tools, or call {self.end_tool} when done."})
                 continue
 
             for call in reply.tool_calls:
@@ -112,9 +128,9 @@ class CodingAgent:
                 if self.on_step:
                     self.on_step(step)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
-                if call.name == "finish":
+                if call.name == "finish" or (call.name == "report" and ws.report is not None):
                     finished = True
-                    summary = _arg(call.arguments, "summary")
+                    summary = ws.report["summary"] if ws.report else _arg(call.arguments, "summary")
 
             if finished:
                 break
@@ -130,6 +146,9 @@ class CodingAgent:
             test_output=clip(test_output),
             steps=steps,
             usage=usage,
+            report=ws.report,
+            audit=ws.audit,
+            evidence=ws.evidence,
         )
 
 

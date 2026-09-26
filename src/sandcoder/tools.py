@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from sandcoder import guard
 from sandcoder.sandbox import Sandbox, SandboxError, Snapshot
 
 MAX_TOOL_OUTPUT = 12_000
@@ -91,6 +93,74 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
+REPORT_SCHEMA = _fn(
+    "report",
+    "Submit your final structured result and end the run. Only report what your commands showed.",
+    {
+        "verdict": {"type": "string", "enum": ["pass", "fail", "findings"]},
+        "summary": {"type": "string", "description": "2-4 sentences for a busy developer."},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["info", "low", "medium", "high", "critical"]},
+                    "file": {"type": "string"},
+                    "line": {"type": "integer"},
+                    "detail": {"type": "string"},
+                    "evidence_cmd": {"type": "string", "description": "Command whose output proves it."},
+                },
+                "required": ["title", "severity", "detail"],
+            },
+        },
+    },
+    ["verdict", "summary"],
+)
+MAX_SUMMARY = 1200
+MAX_FINDINGS = 25
+
+
+def validate_report(args: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a report; raises ValueError on malformed input. Output is treated as untrusted data."""
+    verdict = args.get("verdict")
+    if verdict not in ("pass", "fail", "findings"):
+        raise ValueError("verdict must be pass, fail, or findings")
+    summary = str(args.get("summary", "")).strip()[:MAX_SUMMARY]
+    if not summary:
+        raise ValueError("summary is required")
+    findings = []
+    for f in list(args.get("findings") or [])[:MAX_FINDINGS]:
+        if not isinstance(f, dict) or not f.get("title"):
+            raise ValueError("each finding needs a title")
+        sev = f.get("severity", "info")
+        findings.append({
+            "title": str(f["title"])[:200],
+            "severity": sev if sev in ("info", "low", "medium", "high", "critical") else "info",
+            "file": str(f.get("file", ""))[:300],
+            "line": f.get("line") if isinstance(f.get("line"), int) else None,
+            "detail": str(f.get("detail", ""))[:1500],
+            "evidence_cmd": str(f.get("evidence_cmd", ""))[:500],
+        })
+    return {"verdict": verdict, "summary": summary, "findings": findings}
+
+
+@dataclass
+class HostTool:
+    """A tool that runs in the orchestrator (never in the sandbox), e.g. keyed web search."""
+
+    schema: dict[str, Any]
+    fn: Callable[..., Awaitable[str]]
+
+
+def schemas_for(names: list[str] | None, host_tools: dict[str, HostTool] | None = None) -> list[dict[str, Any]]:
+    """Tool schemas for an agent: a subset of built-ins, plus report, plus host tools."""
+    allowed = [t for t in TOOL_SCHEMAS if names is None or t["function"]["name"] in names]
+    if names is not None and "report" in names:
+        allowed.append(REPORT_SCHEMA)
+    return allowed + [h.schema for h in (host_tools or {}).values()]
+
+
 @dataclass
 class Workspace:
     """Tracks the agent's current snapshot plus named checkpoints."""
@@ -100,6 +170,11 @@ class Workspace:
     test_command: str | None = None
     test_timeout: float = 600.0
     checkpoints: dict[str, Snapshot] = field(default_factory=dict)
+    host_tools: dict[str, HostTool] = field(default_factory=dict)
+    use_guard: bool = True
+    audit: list[dict[str, Any]] = field(default_factory=list)
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    report: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         self.checkpoints.setdefault("start", self.snapshot)
@@ -120,6 +195,13 @@ class Workspace:
                 raise ValueError("arguments must be a JSON object")
         except ValueError as e:
             return f"error: could not parse arguments as JSON ({e})"
+        if name in self.host_tools:
+            try:
+                return clip(await self.host_tools[name].fn(**args))
+            except TypeError as e:
+                return f"error: bad arguments for {name}: {e}"
+            except Exception as e:  # network errors etc. are reported to the model, not raised
+                return f"error: {name} failed: {type(e).__name__}: {e}"
         handler = getattr(self, f"_tool_{name}", None)
         if handler is None:
             return f"error: unknown tool {name!r}"
@@ -131,7 +213,13 @@ class Workspace:
             return f"error: {e}"
 
     async def _tool_bash(self, command: str, timeout: float = 120) -> str:
+        if self.use_guard:
+            verdict = guard.check_command(command)
+            self.audit.append({"command": command, "allowed": verdict.allowed, "rule": verdict.rule})
+            if not verdict.allowed:
+                return f"denied by guard ({verdict.rule}): {verdict.reason}. Choose a different approach."
         res, self.snapshot = await self.sandbox.exec(self.snapshot, command, timeout=float(timeout))
+        self.evidence.append({"cmd": command, "exit": res.exit_code, "output_tail": (res.stdout + res.stderr)[-800:]})
         body = "\n".join(s for s in (res.stdout, res.stderr and f"[stderr]\n{res.stderr}") if s)
         return clip(f"exit code: {res.exit_code}\n{body}".rstrip())
 
@@ -170,3 +258,10 @@ class Workspace:
 
     async def _tool_finish(self, summary: str) -> str:
         return "finished"
+
+    async def _tool_report(self, **args: Any) -> str:
+        try:
+            self.report = validate_report(args)
+        except ValueError as e:
+            return f"error: invalid report ({e}); fix it and call report again"
+        return "report accepted"

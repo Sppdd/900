@@ -1,4 +1,4 @@
-"""Command line: `sandcoder run | exec | images | models`."""
+"""Command line: `sandcoder run | panel | skills | exec | images | models`."""
 
 from __future__ import annotations
 
@@ -108,10 +108,52 @@ async def cmd_images(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_panel(args: argparse.Namespace) -> int:
+    from sandcoder.panel import PanelSpec, Run, RunStore, run_panel
+    from sandcoder.mcp_server import summarize
+
+    task = Path(args.task[1:]).read_text() if args.task.startswith("@") else args.task
+    store = RunStore()
+    spec = PanelSpec(
+        task=task, path=str(Path(args.workspace).resolve()), skills=args.skills.split(","),
+        image=args.image, setup=args.setup or [], test=args.test,
+        skill_tasks={k: (Path(v[1:]).read_text() if v.startswith("@") else v)
+                     for k, v in (item.split("=", 1) for item in args.skill_task or [])},
+    )
+    run = Run(id=store.new_id(), spec=spec)
+    seen: dict[str, str] = {}
+
+    def on_update(r: Run) -> None:
+        if seen.get("_run") != r.status:
+            seen["_run"] = r.status
+            log(f"• run {r.id}: {r.status}" + (f" ({r.files_uploaded} files uploaded)" if r.status == "running" else ""))
+        for name, v in r.verdicts.items():
+            if v.get("status") != seen.get(name):
+                seen[name] = v.get("status", "")
+                if v.get("status") != "running":
+                    log(f"  [{name}] {v.get('status')}: {v.get('verdict')} in {v.get('seconds')}s")
+
+    async with make_sandbox(args) as sb:
+        run = await run_panel(
+            run, sb, OpenAIChat(args.model), store=store, install_toolchain=not args.local, on_update=on_update
+        )
+    print(json.dumps(summarize(run, store), indent=2))
+    log(f"• full record: {store.root / run.id}")
+    return 0 if run.status == "done" else 1
+
+
 async def cmd_models(args: argparse.Namespace) -> int:
     for mid in await OpenAIChat().list_models():
         if args.all or "nemotron" in mid.lower() or mid.lower().startswith("nvidia/"):
             print(mid)
+    return 0
+
+
+async def cmd_skills(args: argparse.Namespace) -> int:
+    from sandcoder.skills import load_skills
+
+    for s in load_skills().values():
+        print(f"{s.name:20} {s.digest}  {s.description}")
     return 0
 
 
@@ -147,6 +189,19 @@ def build_parser() -> argparse.ArgumentParser:
     i = sub.add_parser("images", help="List images available to your project")
     i.add_argument("--limit", type=int, default=50)
     i.set_defaults(fn=cmd_images)
+
+    pn = sub.add_parser("panel", help="Run specialist skills in parallel sandboxes and print their verdicts")
+    pn.add_argument("task", help="What to check/do, or @file")
+    sandbox_opts(pn)
+    pn.set_defaults(workspace=".")
+    pn.add_argument("-s", "--skills", default="security-auditor,test-writer", help="Comma-separated skill names")
+    pn.add_argument("-t", "--test", help="Project test command")
+    pn.add_argument("--skill-task", action="append", help="Per-skill task: NAME=text or NAME=@file (repeatable)")
+    pn.add_argument("--model", help="Model id (default: Nemotron 3 Super)")
+    pn.set_defaults(fn=cmd_panel)
+
+    sk = sub.add_parser("skills", help="List specialist skills")
+    sk.set_defaults(fn=cmd_skills)
 
     m = sub.add_parser("models", help="List Token Factory models (NVIDIA/Nemotron by default)")
     m.add_argument("--all", action="store_true", help="Show every model, not just NVIDIA ones")
