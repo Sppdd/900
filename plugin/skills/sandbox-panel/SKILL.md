@@ -15,6 +15,14 @@ never uploaded. Use it for work that should *run code* away from this machine.
 - "How should we build X?" or "which library?": `feature-researcher`
 - Don't use it for small edits you can make and check directly.
 
+## Skills and profiles
+- `skills_list` shows specialists and library skills. Any library skill (standard SKILL.md,
+  e.g. `tdd`) can be passed in `skills` to run as a specialist; library skills are also
+  mounted in every sandbox for specialists to load when useful.
+- If the project has a `sandbox.toml`, `panel_run` uses it (image, setup, test, specialists,
+  skills). If it reports skills are not installed, tell the user to run
+  `sandcoder profile install`. Never install skills yourself; that's the user's decision.
+
 ## How
 1. Call `panel_run` with `task`, `skills`, and the project's `test` command (plus
    `setup`, e.g. `["pip install -r requirements.txt"]`, if dependencies are needed).

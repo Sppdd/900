@@ -22,7 +22,8 @@ from sandcoder import guard
 from sandcoder.agent import CodingAgent
 from sandcoder.llm import ChatModel
 from sandcoder.sandbox import Sandbox, Snapshot, collect_local_files
-from sandcoder.skills import Skill, load_skills
+from sandcoder.skills import LIBRARY_MOUNT, Skill, library_skills, load_skills, sandcoder_home
+from sandcoder.tools import HostTool, _fn
 from sandcoder.web import host_tools_for
 
 DEFAULT_IMAGE = "python:3.12-slim"
@@ -30,13 +31,12 @@ BASE_SETUP = [
     "(command -v git >/dev/null) || (apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null)",
 ]
 BASELINE_CMD = (
-    "git init -q . && printf '__pycache__/\\n*.pyc\\n.pytest_cache/\\n.coverage\\n*.egg-info/\\n' >> .git/info/exclude"
+    "git init -q . && printf '__pycache__/\\n*.pyc\\n.pytest_cache/\\n.coverage\\n*.egg-info/\\n.sandcoder-skills/\\n' >> .git/info/exclude"
     " && git add -A && git -c user.email=panel@sandcoder.local -c user.name=sandcoder"
     " commit -q --allow-empty -m baseline"
 )
 DIFF_CMD = "git add -A && git diff --cached --no-color"
 MAX_PATCH_CHARS = 200_000
-RUNS_DIR = Path.home() / ".sandcoder" / "runs"
 
 
 @dataclass
@@ -48,6 +48,8 @@ class PanelSpec:
     setup: list[str] = field(default_factory=list)
     test: str | None = None
     skill_tasks: dict[str, str] = field(default_factory=dict)  # optional per-skill task overrides
+    library: list[str] | None = None  # library skills to mount; None = all installed library skills
+    toolchain: list[str] = field(default_factory=list)  # extra cached image setup (e.g. from a profile)
 
 
 @dataclass
@@ -61,6 +63,7 @@ class Run:
     files_uploaded: int = 0
     base_snapshot: str = ""
     toolchain_cached: bool = False
+    library: list[str] = field(default_factory=list)
     verdicts: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -74,8 +77,8 @@ class Run:
 class RunStore:
     """Runs persisted as JSON under ~/.sandcoder/runs/<id>/ (patches as separate .diff files)."""
 
-    def __init__(self, root: Path = RUNS_DIR) -> None:
-        self.root = root
+    def __init__(self, root: Path | None = None) -> None:
+        self.root = root or sandcoder_home() / "runs"
 
     def new_id(self) -> str:
         return time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3)
@@ -164,7 +167,7 @@ async def run_panel(
     on_update: Callable[[Run], None] | None = None,
 ) -> Run:
     """Execute a panel run to completion, saving progress after every state change."""
-    catalog = catalog or load_skills()
+    catalog = catalog or load_skills(run.spec.path)
     spec = run.spec
     unknown = [s for s in spec.skills if s not in catalog]
     if unknown or not spec.skills:
@@ -181,12 +184,23 @@ async def run_panel(
         files = collect_local_files(Path(spec.path))
         run.files_uploaded = len(files)
         if install_toolchain:
-            cmds = all_toolchain_commands(catalog)
+            cmds = all_toolchain_commands(catalog) + [c for c in spec.toolchain if c not in all_toolchain_commands(catalog)]
             tag = toolchain_tag(spec.image, cmds)
             base = await sandbox.toolchain(spec.image, cmds, tag=tag)
         else:
             base = await sandbox.start(spec.image)
         snap = await sandbox.add_files(base, files)
+        # Library skills: mounted for every specialist (index + load_skill), plus any library
+        # skill that was selected to run as a specialist itself.
+        library = library_skills(catalog, spec.library)
+        library += [catalog[n] for n in spec.skills if catalog[n].kind == "library" and catalog[n] not in library]
+        mounted: dict[str, tuple[bytes, int]] = {}
+        for sk in library:
+            for rel, data in sk.files().items():
+                mounted[f"{LIBRARY_MOUNT}/{sk.name}/{rel}"] = data
+        if mounted:
+            snap = await sandbox.add_files(snap, mounted)
+        run.library = [f"{sk.name}@{sk.digest}" for sk in library]
         for cmd in spec.setup:
             res, snap = await sandbox.exec(snap, cmd, timeout=900)
             if not res.ok:
@@ -203,7 +217,7 @@ async def run_panel(
         async def one(name: str) -> None:
             t0 = time.monotonic()
             try:
-                verdict = await _run_skill(catalog[name], spec, sandbox, model, snap)
+                verdict = await _run_skill(catalog[name], spec, sandbox, model, snap, library=library)
             except asyncio.CancelledError:
                 verdict = {"status": "cancelled"}
                 raise
@@ -226,15 +240,48 @@ async def run_panel(
     return run
 
 
-async def _run_skill(skill: Skill, spec: PanelSpec, sandbox: Sandbox, model: ChatModel, base: Snapshot) -> dict[str, Any]:
+def library_index(library: list[Skill]) -> str:
+    if not library:
+        return ""
+    lines = [
+        "\nSkill library: reusable procedures mounted in this sandbox. When one clearly fits your",
+        "current step, call `load_skill(name)` and follow it (adapting interactive steps as above).",
+    ]
+    lines += [f"- {sk.name}: {sk.description[:200]}" for sk in library]
+    return "\n".join(lines) + "\n"
+
+
+def library_tool(library: list[Skill]) -> HostTool:
+    by_name = {sk.name: sk for sk in library}
+
+    async def load_skill(name: str) -> str:
+        sk = by_name.get(name)
+        if not sk:
+            return f"unknown skill {name!r}; available: {', '.join(by_name)}"
+        text = (Path(sk.path) / "SKILL.md").read_text(errors="replace")
+        files = [f for f in sk.files() if f != "SKILL.md"]
+        tail = f"\n\nSkill files in `{LIBRARY_MOUNT}/{sk.name}/`: {', '.join(files[:40])}" if files else ""
+        return f"[skill {sk.name} @ {sk.digest}]\n{text}{tail}"
+
+    return HostTool(
+        schema=_fn("load_skill", "Load the full instructions of a skill from the skill library.",
+                   {"name": {"type": "string"}}, ["name"]),
+        fn=load_skill,
+    )
+
+
+async def _run_skill(
+    skill: Skill, spec: PanelSpec, sandbox: Sandbox, model: ChatModel, base: Snapshot, *, library: list[Skill] | None = None
+) -> dict[str, Any]:
+    library = [sk for sk in (library or []) if sk.name != skill.name]
     if skill.mode == "explore":
-        return await _run_explore(skill, spec, sandbox, model, base)
+        return await _run_explore(skill, spec, sandbox, model, base, library=library)
     preflight = await run_preflight(sandbox, base, skill.preflight)
     return await _agent_verdict(
         skill, spec, sandbox, model, base,
         task=skill_task(spec, skill.name, preflight),
         system_prompt=skill.system_prompt, tools=skill.tools,
-        max_steps=skill.max_steps, min_findings=skill.min_findings, preflight=preflight,
+        max_steps=skill.max_steps, min_findings=skill.min_findings, preflight=preflight, library=library,
     )
 
 
@@ -263,8 +310,13 @@ async def _agent_verdict(
     min_findings: int = 0,
     verify: bool | None = None,
     preflight: list[tuple[str, int, str]] | None = None,
+    library: list[Skill] | None = None,
 ) -> dict[str, Any]:
     verify = skill.verify == "tests_pass" if verify is None else verify
+    host_tools = host_tools_for(skill.host_tools)
+    if library:
+        host_tools["load_skill"] = library_tool(library)
+        system_prompt += library_index(library)
     agent = CodingAgent(
         model,
         sandbox,
@@ -272,7 +324,7 @@ async def _agent_verdict(
         max_steps=max_steps,
         system_prompt=system_prompt,
         tools=tools,
-        host_tools=host_tools_for(skill.host_tools),
+        host_tools=host_tools,
         min_findings=min_findings,
     )
     result = await agent.run(task, base)
@@ -314,7 +366,9 @@ def _add_tokens(total: dict[str, int], more: dict[str, int] | None) -> dict[str,
     return total
 
 
-async def _run_explore(skill: Skill, spec: PanelSpec, sandbox: Sandbox, model: ChatModel, base: Snapshot) -> dict[str, Any]:
+async def _run_explore(
+    skill: Skill, spec: PanelSpec, sandbox: Sandbox, model: ChatModel, base: Snapshot, *, library: list[Skill] | None = None
+) -> dict[str, Any]:
     """Planner proposes approaches; the harness forks one sandbox per approach and runs them in parallel.
 
     Branching lives in the harness, not the model: each implementer starts from the same
@@ -324,7 +378,7 @@ async def _run_explore(skill: Skill, spec: PanelSpec, sandbox: Sandbox, model: C
         skill, spec, sandbox, model, base,
         task=skill_task(spec, skill.name),
         system_prompt=skill.planner_prompt, tools=skill.planner_tools,
-        max_steps=skill.planner_max_steps, min_findings=skill.min_findings, verify=False,
+        max_steps=skill.planner_max_steps, min_findings=skill.min_findings, verify=False, library=library,
     )
     approaches = [f for f in plan.get("findings", []) if f.get("title")][: skill.max_approaches]
     tokens = _add_tokens({}, plan.get("tokens"))
@@ -340,6 +394,7 @@ async def _run_explore(skill: Skill, spec: PanelSpec, sandbox: Sandbox, model: C
             return await _agent_verdict(
                 skill, spec, sandbox, model, base,
                 task=task, system_prompt=skill.system_prompt, tools=skill.tools, max_steps=skill.max_steps,
+                library=library,
             )
         except Exception as e:
             return {"verdict": "error", "summary": f"{type(e).__name__}: {e}"[:500], "patch": None, "tests_passed": False}
@@ -404,3 +459,47 @@ def _save(run: Run, store: RunStore | None, on_update: Callable[[Run], None] | N
         store.save(run)
     if on_update:
         on_update(run)
+
+
+DEFAULT_SPECIALISTS = ["security-auditor", "test-writer"]
+
+
+def resolve_spec(
+    task: str,
+    path: str,
+    *,
+    skills: list[str] | None = None,
+    image: str | None = None,
+    setup: list[str] | None = None,
+    test: str | None = None,
+    skill_tasks: dict[str, str] | None = None,
+    library: list[str] | None = None,
+    profile_path: str | None = None,
+) -> PanelSpec:
+    """Build a PanelSpec, filling gaps from a sandbox.toml profile (explicit args win).
+
+    Raises ValueError if the profile references skills that aren't installed, since installing
+    third-party skills is a human step (`sandcoder profile install`).
+    """
+    from sandcoder.profile import find_profile, load_profile, skill_status
+
+    prof = load_profile(profile_path) if profile_path else find_profile(path)
+    if prof:
+        bad = {n: s for n, s in skill_status(prof).items() if s != "ok"}
+        if bad:
+            detail = ", ".join(f"{n} ({s})" for n, s in bad.items())
+            raise ValueError(
+                f"profile {prof.path} references skills that are not installed as pinned: {detail}. "
+                f"Run `sandcoder profile install {prof.path}` to review and install them."
+            )
+    return PanelSpec(
+        task=task,
+        path=path,
+        skills=skills or (prof.specialists if prof and prof.specialists else list(DEFAULT_SPECIALISTS)),
+        image=image or (prof.image if prof else DEFAULT_IMAGE),
+        setup=(prof.setup if prof else []) + list(setup or []),
+        test=test or (prof.test if prof else None),
+        skill_tasks=skill_tasks or {},
+        library=library if library is not None else (list(prof.skills) if prof else None),
+        toolchain=prof.toolchain if prof else [],
+    )

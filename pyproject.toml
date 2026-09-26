@@ -1,6 +1,6 @@
 [project]
 name = "sandcoder"
-version = "0.2.0"
+version = "0.3.0"
 description = "A panel of sandboxed specialist agents for your coding agent, on Nebius Token Factory Sandboxes"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"

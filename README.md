@@ -88,9 +88,47 @@ Runs are stored in `~/.sandcoder/runs/<run_id>/` (`run.json` plus one `.diff` pe
 
 Layers 3–4 catch common attacks, not a determined adversary. Isolation and human review of diffs are the boundary.
 
-## Skills
+## Bring your own skills
 
-Each skill is a folder of data in `src/sandcoder/skills/<name>/`:
+Any standard `SKILL.md` skill works. Examples: [mattpocock/skills](https://github.com/mattpocock/skills), your `~/.claude/skills`, ones [autoharness](https://github.com/tigerless-labs/autoharness) learned, or your team's.
+
+```bash
+sandcoder skills add github:mattpocock/skills/skills/engineering --only tdd,diagnosing-bugs   # reviewed, then pinned
+sandcoder skills add ~/.claude/skills/my-skill
+sandcoder skills                                   # specialists + library skills, with pins and tamper check
+sandcoder panel "fix the discount bug test-first" -w examples/buggy-api -s tdd -t "python -m pytest -q"
+```
+
+- **Review before install.** `skills add` lists each skill's files and scripts and warns on risky patterns and prompt-injection-like text. It asks for approval, then pins the skill by git commit and content hash in `~/.sandcoder/skills/<name>/.source.json`. `sandcoder skills` flags any installed skill whose files changed since install.
+- **Library in every sandbox.** Installed skills are mounted at `.sandcoder-skills/`, which is excluded from diffs. Specialists see a name and description index and call `load_skill(name)` when a skill fits.
+- **Any skill as a specialist.** Pass a library skill in `-s` / `skills=[...]`. A wrapper adapts interactive steps ("ask the user") to unattended sandbox runs.
+- **Human-only installs.** The MCP server can list skills but never install them, so an agent can't pull third-party instructions into your sandboxes.
+
+Live check: `tdd` from mattpocock/skills (pinned at `c55ee46`) ran as a specialist on `examples/buggy-api`. It fixed the discount bug test-first in 32 s, with a passing, low-risk patch.
+
+## Sandbox profiles
+
+A `sandbox.toml` at the project root describes a reusable sandbox filled with skills. The website has a builder that generates one.
+
+```toml
+name = "py-backend"
+image = "python:3.12-slim"
+toolchain = ["pip install -q ruff"]           # baked into a cached, tagged image
+setup = ["pip install -r requirements.txt"]   # per run
+test = "python -m pytest -q"
+specialists = ["security-auditor", "test-writer"]
+
+[skills]
+tdd = "github:mattpocock/skills/skills/engineering/tdd@c55ee46073ed923f86ce59a5eb3b6d895095d1b7"
+conventions = "./skills/api-conventions"      # relative to this file
+```
+
+- `sandcoder profile init | show | install | build`: `install` reviews and pins the referenced skills, and `build` pre-builds the cached image on Token Factory.
+- The CLI and `panel_run` pick up `sandbox.toml` automatically. They refuse to run if a referenced skill isn't installed at the pinned source.
+
+## Specialist skills
+
+Each specialist is a folder of data in `src/sandcoder/skills/<name>/`:
 - `SKILL.md`: the role and method.
 - `skill.toml`: tools, budgets, toolchain, and `preflight` commands. The harness runs the preflight commands itself and feeds their output to the agent, so scanners and coverage always run.
 
@@ -115,7 +153,7 @@ sandcoder models                       # NVIDIA models on Token Factory
 ## Website
 
 `site/` holds a static landing page (features, live-run replay, install, MCP reference), served by nginx on port 8080.
-`deploy/deploy-site.sh` builds the image, pushes it to Nebius Container Registry and creates a Nebius Serverless AI Endpoint. It pins a CPU platform, because the endpoint default is an H100 GPU. Use `DRY_RUN=1` first.
+`GCP_PROJECT=<id> ./deploy/deploy-site.sh` deploys it to **Google Cloud Run** from source (Cloud Build, so no local Docker needed). It scales to zero and needs no auth.
 
 ## Development
 
@@ -129,6 +167,7 @@ Layout:
   - `sandbox.py` (Token Factory Sandboxes + local test backend)
   - `panel.py` (runs)
   - `agent.py`, `tools.py`, `guard.py`, `skills/`, `web.py`
+  - `skillhub.py` (skill install/pinning), `profile.py` (`sandbox.toml`)
   - `mcp_server.py`, `cli.py`
 - `plugin/`: Claude Code plugin.
 - `.claude-plugin/marketplace.json`: plugin marketplace entry.

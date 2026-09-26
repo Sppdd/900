@@ -109,17 +109,25 @@ async def cmd_images(args: argparse.Namespace) -> int:
 
 
 async def cmd_panel(args: argparse.Namespace) -> int:
-    from sandcoder.panel import PanelSpec, Run, RunStore, run_panel
     from sandcoder.mcp_server import summarize
+    from sandcoder.panel import Run, RunStore, resolve_spec, run_panel
 
     task = Path(args.task[1:]).read_text() if args.task.startswith("@") else args.task
     store = RunStore()
-    spec = PanelSpec(
-        task=task, path=str(Path(args.workspace).resolve()), skills=args.skills.split(","),
-        image=args.image, setup=args.setup or [], test=args.test,
-        skill_tasks={k: (Path(v[1:]).read_text() if v.startswith("@") else v)
-                     for k, v in (item.split("=", 1) for item in args.skill_task or [])},
-    )
+    try:
+        spec = resolve_spec(
+            task, str(Path(args.workspace).resolve()),
+            skills=args.skills.split(",") if args.skills else None,
+            image=args.image, setup=args.setup, test=args.test,
+            skill_tasks={k: (Path(v[1:]).read_text() if v.startswith("@") else v)
+                         for k, v in (item.split("=", 1) for item in args.skill_task or [])},
+            library=args.library.split(",") if args.library else None,
+            profile_path=args.profile,
+        )
+    except ValueError as e:
+        log(f"error: {e}")
+        return 2
+    log(f"• specialists: {', '.join(spec.skills)}" + (f" · library: {', '.join(spec.library)}" if spec.library else ""))
     run = Run(id=store.new_id(), spec=spec)
     seen: dict[str, str] = {}
 
@@ -150,11 +158,108 @@ async def cmd_models(args: argparse.Namespace) -> int:
 
 
 async def cmd_skills(args: argparse.Namespace) -> int:
+    from sandcoder import skillhub
     from sandcoder.skills import load_skills
 
-    for s in load_skills().values():
-        print(f"{s.name:20} {s.digest}  {s.description}")
-    return 0
+    action = getattr(args, "skills_cmd", None) or "list"
+    if action == "list":
+        pins = {s["name"]: s for s in skillhub.installed()}
+        for s in load_skills(Path.cwd()).values():
+            pin = pins.get(s.name)
+            where = s.source + (f" {pin['source']}" if pin else "") + (" ⚠ TAMPERED" if pin and pin["tampered"] else "")
+            print(f"{s.name:28} {s.kind:10} {s.digest}  [{where}]\n{'':28} {s.description[:110]}")
+        return 0
+    if action == "remove":
+        ok = skillhub.remove(args.name)
+        log(f"removed {args.name}" if ok else f"{args.name} is not an installed skill")
+        return 0 if ok else 1
+    if action == "add":
+        return install_source(args.source, only=args.only, yes=args.yes, force=args.force)
+    return 2
+
+
+def install_source(source: str, *, only: str | None = None, yes: bool = False, force: bool = False) -> int:
+    """Fetch, show a review, ask for approval, then install pinned. Shared by `skills add` and `profile install`."""
+    from sandcoder import skillhub
+
+    try:
+        fetched = skillhub.fetch(source)
+    except ValueError as e:
+        log(f"error: {e}")
+        return 1
+    try:
+        names = only.split(",") if only else None
+        if names is not None:
+            fetched.candidates = [c for c in fetched.candidates if c.name in names]
+        if not fetched.candidates:
+            log("no skills (SKILL.md folders) found at that source")
+            return 1
+        print(skillhub.review_text(fetched))
+        if not yes:
+            if not sys.stdin.isatty():
+                log("\nrefusing to install without review: re-run interactively or pass --yes")
+                return 1
+            if input(f"\nInstall {len(fetched.candidates)} skill(s)? [y/N] ").strip().lower() not in ("y", "yes"):
+                log("cancelled")
+                return 1
+        try:
+            done = skillhub.install(fetched, force=force)
+        except ValueError as e:
+            log(f"error: {e}")
+            return 1
+        log(f"installed: {', '.join(done)}")
+        return 0
+    finally:
+        fetched.cleanup()
+
+
+async def cmd_profile(args: argparse.Namespace) -> int:
+    from sandcoder.profile import PROFILE_FILE, Profile, load_profile, skill_status, toml_for
+
+    if args.profile_cmd == "init":
+        target = Path(args.path) / PROFILE_FILE if Path(args.path).is_dir() else Path(args.path)
+        if target.exists():
+            log(f"{target} already exists")
+            return 1
+        target.write_text(toml_for(Profile(
+            name=Path.cwd().name, specialists=["security-auditor", "test-writer"],
+            setup=["pip install -r requirements.txt"] if Path("requirements.txt").exists() else [],
+            test="python -m pytest -q",
+        )))
+        log(f"wrote {target}; add skills under [skills], then run `sandcoder profile install`")
+        return 0
+    prof = load_profile(args.path)
+    status = skill_status(prof)
+    if args.profile_cmd == "show":
+        print(f"profile {prof.name} ({prof.path})\nimage: {prof.image}\nspecialists: {', '.join(prof.specialists)}")
+        for name, st in status.items():
+            print(f"  skill {name:24} {st:12} {prof.skills[name]}")
+        return 0
+    if args.profile_cmd == "install":
+        rc = 0
+        for name, st in status.items():
+            if st == "ok":
+                continue
+            log(f"\n== {name}: {st}")
+            rc |= install_source(prof.skills[name], only=name, yes=args.yes, force=st != "missing")
+        if rc == 0:
+            log("all profile skills installed and pinned")
+        return rc
+    if args.profile_cmd == "build":
+        from sandcoder.panel import all_toolchain_commands, toolchain_tag
+        from sandcoder.skills import load_skills
+
+        if any(st != "ok" for st in status.values()):
+            log("install the profile's skills first: sandcoder profile install")
+            return 1
+        cmds = all_toolchain_commands(load_skills()) + prof.toolchain
+        tag = toolchain_tag(prof.image, cmds)
+        async with ContreeSandbox.from_env() as sb:
+            log(f"• building {tag} from {prof.image} ({len(cmds)} setup commands)")
+            await sb.toolchain(prof.image, cmds, tag=tag)
+        log(f"• ready: every panel run with this profile now starts from {tag}")
+        return 0
+    return 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -193,15 +298,37 @@ def build_parser() -> argparse.ArgumentParser:
     pn = sub.add_parser("panel", help="Run specialist skills in parallel sandboxes and print their verdicts")
     pn.add_argument("task", help="What to check/do, or @file")
     sandbox_opts(pn)
-    pn.set_defaults(workspace=".")
-    pn.add_argument("-s", "--skills", default="security-auditor,test-writer", help="Comma-separated skill names")
+    pn.set_defaults(workspace=".", image=None)
+    pn.add_argument("-s", "--skills", help="Comma-separated specialists (default: profile's or security-auditor,test-writer)")
+    pn.add_argument("--library", help="Comma-separated library skills to mount (default: profile's, else all installed)")
+    pn.add_argument("--profile", help="Path to a sandbox.toml (default: <workspace>/sandbox.toml if present)")
     pn.add_argument("-t", "--test", help="Project test command")
     pn.add_argument("--skill-task", action="append", help="Per-skill task: NAME=text or NAME=@file (repeatable)")
     pn.add_argument("--model", help="Model id (default: Nemotron 3 Super)")
     pn.set_defaults(fn=cmd_panel)
 
-    sk = sub.add_parser("skills", help="List specialist skills")
+    sk = sub.add_parser("skills", help="List, add or remove skills (specialists and library skills)")
     sk.set_defaults(fn=cmd_skills)
+    sks = sk.add_subparsers(dest="skills_cmd")
+    sks.add_parser("list", help="List all skills")
+    ska = sks.add_parser("add", help="Install skills from github:OWNER/REPO/PATH@REF, a GitHub URL, or a local path")
+    ska.add_argument("source")
+    ska.add_argument("--only", help="Comma-separated skill names to install from a multi-skill source")
+    ska.add_argument("-y", "--yes", action="store_true", help="Skip the interactive approval (after reviewing the source)")
+    ska.add_argument("--force", action="store_true", help="Replace an installed skill of the same name")
+    skr = sks.add_parser("remove", help="Remove an installed skill")
+    skr.add_argument("name")
+
+    pf = sub.add_parser("profile", help="Sandbox profiles (sandbox.toml): a reusable sandbox filled with skills")
+    pfs = pf.add_subparsers(dest="profile_cmd", required=True)
+    for name, text in [("init", "Write a starter sandbox.toml"), ("show", "Show a profile and its skills' install status"),
+                       ("install", "Review and install the skills a profile references"),
+                       ("build", "Pre-build the profile's cached sandbox image on Token Factory")]:
+        sp = pfs.add_parser(name, help=text)
+        sp.add_argument("path", nargs="?", default=".")
+        if name == "install":
+            sp.add_argument("-y", "--yes", action="store_true")
+    pf.set_defaults(fn=cmd_profile)
 
     m = sub.add_parser("models", help="List Token Factory models (NVIDIA/Nemotron by default)")
     m.add_argument("--all", action="store_true", help="Show every model, not just NVIDIA ones")

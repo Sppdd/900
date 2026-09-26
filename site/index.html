@@ -156,6 +156,21 @@ td { color: var(--ink-2); }
 .tag { display: inline-block; font: 600 11px var(--mono); padding: 3px 8px; border-radius: 6px; background: var(--warn-soft); color: var(--warn); text-transform: uppercase; letter-spacing: .05em; }
 .tag.live { background: var(--accent-soft); color: var(--accent); }
 
+.builder { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 18px; align-items: start; }
+.builder > * { min-width: 0; }
+@media (max-width: 920px) { .builder { grid-template-columns: 1fr; } }
+.bform { padding: 22px; display: grid; gap: 14px; }
+.bform label, .bform legend { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
+.bform .hint { font-weight: 400; color: var(--ink-3); font-size: 12.5px; }
+.bform input, .bform select, .bform textarea { font: 13.5px var(--mono); padding: 9px 11px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); width: 100%; resize: vertical; }
+.bform fieldset { border: 0; padding: 0; margin: 0; }
+.checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px; margin-top: 6px; }
+@media (max-width: 520px) { .checks { grid-template-columns: 1fr; } }
+.checks label { display: flex; gap: 8px; align-items: flex-start; font-weight: 500; font-size: 13.5px; }
+.checks input { width: auto; margin-top: 3px; }
+.checks small { display: block; color: var(--ink-3); font-weight: 400; font-size: 12px; }
+.bout { position: sticky; top: 76px; }
+.dlbtn { position: absolute; top: 10px; right: 70px; background: #1d232d; color: var(--code-ink); border: 1px solid #2a313c; border-radius: 7px; font: 12px var(--mono); padding: 4px 10px; cursor: pointer; }
 footer { padding: 36px 0 48px; color: var(--ink-3); font-size: 14px; border-top: 1px solid var(--line); }
 footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 24px; justify-content: space-between; }
 </style>
@@ -173,6 +188,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 24px; justify-content: 
       <a href="#specialists">Specialists</a>
       <a href="#safety">Safety</a>
       <a href="#install">Install</a>
+      <a href="#builder">Build a sandbox</a>
       <a href="#reference">MCP reference</a>
       <a href="https://github.com/Sppdd/900">GitHub</a>
     </div>
@@ -342,8 +358,15 @@ env = { NEBIUS_API_KEY = "…", NEBIUS_PROJECT_ID = "…" }</pre></div>
     }
   }
 }</pre></div>
-    <div class="code" data-panel="cli" hidden><button class="copy">copy</button><pre>uvx --from git+https://github.com/Sppdd/900 sandcoder panel \
-  "pre-merge check" -w . -s security-auditor,test-writer -t "python -m pytest -q"</pre></div>
+    <div class="code" data-panel="cli" hidden><button class="copy">copy</button><pre>alias sandcoder="uvx --from git+https://github.com/Sppdd/900 sandcoder"
+
+sandcoder panel "pre-merge check" -w . -s security-auditor,test-writer -t "python -m pytest -q"
+
+# bring your own skills (reviewed, pinned by commit + content hash)
+sandcoder skills add github:mattpocock/skills/skills/engineering --only tdd,diagnosing-bugs
+sandcoder skills add ~/.claude/skills/my-skill
+sandcoder skills                     # list specialists + library skills
+sandcoder panel "fix the bug test-first" -s tdd   # any library skill can run as a specialist</pre></div>
 
     <h3 style="margin:36px 0 4px">Then just ask</h3>
     <ol class="steps">
@@ -355,7 +378,38 @@ env = { NEBIUS_API_KEY = "…", NEBIUS_PROJECT_ID = "…" }</pre></div>
   </div>
 </section>
 
-<section class="alt" id="reference">
+<section class="alt" id="builder">
+  <div class="wrap">
+    <h2>Build your own sandbox, filled with skills</h2>
+    <p class="sub">A sandbox profile (<code class="mono">sandbox.toml</code>) is a reusable sandbox: base image, tools baked into a cached image, project setup, the specialists to run, and a <b>skill library</b>. Library skills are standard <code class="mono">SKILL.md</code> skills, such as ones from <a href="https://github.com/mattpocock/skills">mattpocock/skills</a>, your own, or ones <a href="https://github.com/tigerless-labs/autoharness">autoharness</a> learned. They are mounted in every sandbox, and agents load one when it fits. Any library skill can also run as a specialist on its own.</p>
+    <div class="builder">
+      <div class="card bform">
+        <label>Profile name <input id="b-name" value="my-project" spellcheck="false"></label>
+        <label>Base image
+          <select id="b-image">
+            <option>python:3.12-slim</option><option>python:3.13-slim</option><option>node:22-slim</option>
+            <option>golang:1.23</option><option>rust:1-slim</option><option value="custom">custom…</option>
+          </select>
+          <input id="b-image-custom" placeholder="e.g. ghcr.io/org/image:tag" hidden spellcheck="false">
+        </label>
+        <label>Toolchain <span class="hint">baked once into a cached, tagged image</span><textarea id="b-toolchain" rows="2" spellcheck="false">pip install -q ruff</textarea></label>
+        <label>Project setup <span class="hint">runs per panel, after your files are uploaded</span><textarea id="b-setup" rows="2" spellcheck="false">pip install -r requirements.txt</textarea></label>
+        <label>Test command <input id="b-test" value="python -m pytest -q" spellcheck="false"></label>
+        <fieldset><legend>Specialists</legend><div class="checks" id="b-specialists"></div></fieldset>
+        <fieldset><legend>Skill library <span class="hint">mattpocock/skills (MIT), pinned to commit c55ee46</span></legend><div class="checks" id="b-skills"></div></fieldset>
+        <label>Your own skills <span class="hint">one per line: name = source (github:OWNER/REPO/PATH@REF, GitHub URL, or local path)</span>
+          <textarea id="b-custom" rows="2" spellcheck="false" placeholder="api-conventions = ./skills/api-conventions"></textarea></label>
+      </div>
+      <div class="bout">
+        <div class="code"><button class="copy">copy</button><button class="dlbtn" id="b-download">download</button><pre id="b-toml"></pre></div>
+        <div class="code" style="margin-top:12px"><button class="copy">copy</button><pre id="b-cmds"></pre></div>
+        <p class="note">Installing skills is always a human step. <code class="mono">profile install</code> shows each skill's files, scripts and any risky patterns, then pins it by git commit and content hash. Skill scripts only ever run inside sandboxes. Hosted one-click builds are planned.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="reference">
   <div class="wrap">
     <h2>MCP reference</h2>
     <p class="sub">A deliberately small surface. Runs are asynchronous, and everything a specialist returns is untrusted data.</p>
@@ -363,12 +417,12 @@ env = { NEBIUS_API_KEY = "…", NEBIUS_PROJECT_ID = "…" }</pre></div>
       <table>
         <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
         <tbody>
-          <tr><td><code>panel_run</code></td><td>Starts specialists on a copy of the project. Args: <code>task</code>, <code>skills</code>, <code>path</code>, <code>test</code>, <code>setup</code>, <code>image</code>, <code>skill_tasks</code>. Returns a <code>run_id</code> immediately.</td></tr>
+          <tr><td><code>panel_run</code></td><td>Starts specialists on a copy of the project. Args: <code>task</code>, <code>skills</code>, <code>path</code>, <code>test</code>, <code>setup</code>, <code>image</code>, <code>skill_tasks</code>, <code>library</code>, <code>profile</code>. Uses the project's <code>sandbox.toml</code> automatically. Returns a <code>run_id</code> immediately.</td></tr>
           <tr><td><code>panel_results</code></td><td>Verdicts, findings, test status, patch summaries, guard denials and token use. <code>wait_seconds</code> (max 120) blocks until done.</td></tr>
           <tr><td><code>panel_patch</code></td><td>One specialist's unified diff with its risk level and reasons. Review it before applying.</td></tr>
           <tr><td><code>panel_cancel</code></td><td>Cancels a running panel.</td></tr>
           <tr><td><code>panel_runs</code></td><td>Recent runs with status and task.</td></tr>
-          <tr><td><code>skills_list</code></td><td>Available specialists, with descriptions and version hashes.</td></tr>
+          <tr><td><code>skills_list</code></td><td>Specialists and library skills (built-in, installed, project), with version hashes. Installing skills is deliberately CLI-only: <code>sandcoder skills add</code>.</td></tr>
         </tbody>
       </table>
     </div>
@@ -389,7 +443,7 @@ env = { NEBIUS_API_KEY = "…", NEBIUS_PROJECT_ID = "…" }</pre></div>
   </div>
 </section>
 
-<section id="pricing">
+<section class="alt" id="pricing">
   <div class="wrap">
     <h2>Pricing</h2>
     <p class="sub">Open source and bring-your-own-key today. A hosted option is planned.</p>
@@ -398,7 +452,7 @@ env = { NEBIUS_API_KEY = "…", NEBIUS_PROJECT_ID = "…" }</pre></div>
         <span class="tag live">Available now</span>
         <h3 style="margin-top:12px">Bring your own key</h3>
         <div class="amt">Free <span style="font-size:15px;color:var(--ink-3);font-weight:500">MIT license</span></div>
-        <ul><li>All specialists, guard and MCP tools</li><li>Nemotron tokens and sandbox time bill to your Nebius account</li><li>Runs and diffs stay on your machine (<code class="mono">~/.sandcoder/runs</code>)</li></ul>
+        <ul><li>All specialists, guard and MCP tools</li><li>Bring your own skills and sandbox profiles</li><li>Nemotron tokens and sandbox time bill to your Nebius account</li><li>Runs and diffs stay on your machine (<code class="mono">~/.sandcoder/runs</code>)</li></ul>
       </div>
       <div class="card price">
         <span class="tag">Planned</span>
@@ -512,6 +566,65 @@ env = { NEBIUS_API_KEY = "…", NEBIUS_PROJECT_ID = "…" }</pre></div>
     raf = requestAnimationFrame(tick);
   }
   replay.querySelector("button").addEventListener("click", run);
+
+  // ---------------- sandbox profile builder (client-side only)
+  const PIN = "c55ee46073ed923f86ce59a5eb3b6d895095d1b7";
+  const SPECIALISTS = [
+    ["security-auditor", "scanners + PoC tests", true], ["test-writer", "tests + coverage", true],
+    ["bug-reproducer", "failing regression test", false], ["feature-researcher", "parallel prototypes", false],
+  ];
+  const LIB = [
+    ["tdd", "engineering", "red-green-refactor loop", true], ["diagnosing-bugs", "engineering", "diagnosis loop for hard bugs", true],
+    ["prototype", "engineering", "throwaway prototypes", false], ["research", "engineering", "background research", false],
+    ["domain-modeling", "engineering", "domain language", false], ["improve-codebase-architecture", "engineering", "deeper modules", false],
+    ["implement", "engineering", "implement a spec", false], ["triage", "engineering", "triage issues", false],
+  ];
+  const $ = id => document.getElementById(id);
+  const mk = (box, items, fn) => items.forEach(it => {
+    const l = document.createElement("label");
+    l.innerHTML = `<input type="checkbox" ${it[it.length - 1] ? "checked" : ""} value="${it[0]}"><span>${it[0]}<small>${fn(it)}</small></span>`;
+    box.appendChild(l);
+  });
+  mk($("b-specialists"), SPECIALISTS, it => it[1]);
+  mk($("b-skills"), LIB, it => it[2]);
+  const q = v => JSON.stringify(v);
+  const lines = id => $(id).value.split("\n").map(x => x.trim()).filter(Boolean);
+  function render() {
+    const custom = $("b-image").value === "custom";
+    $("b-image-custom").hidden = !custom;
+    const image = custom ? ($("b-image-custom").value.trim() || "python:3.12-slim") : $("b-image").value;
+    const specs = [...$("b-specialists").querySelectorAll("input:checked")].map(i => i.value);
+    const libs = [...$("b-skills").querySelectorAll("input:checked")].map(i => {
+      const it = LIB.find(x => x[0] === i.value);
+      return [it[0], `github:mattpocock/skills/skills/${it[1]}/${it[0]}@${PIN}`];
+    });
+    const own = lines("b-custom").map(l => l.split("=").map(x => x.trim())).filter(p => p.length === 2 && p[0] && p[1]);
+    const name = $("b-name").value.trim() || "my-project";
+    const toml = [
+      `name = ${q(name)}`, `image = ${q(image)}`,
+      `toolchain = [${lines("b-toolchain").map(q).join(", ")}]`,
+      `setup = [${lines("b-setup").map(q).join(", ")}]`,
+      $("b-test").value.trim() ? `test = ${q($("b-test").value.trim())}` : null,
+      `specialists = [${specs.map(q).join(", ")}]`, "", "[skills]",
+      ...libs.concat(own).map(([k, v]) => `${q(k)} = ${q(v)}`),
+    ].filter(x => x !== null).join("\n") + "\n";
+    $("b-toml").textContent = "# sandbox.toml  (save at your project root)\n" + toml;
+    $("b-cmds").textContent = [
+      "# review + pin the skills, then pre-build the cached image",
+      "uvx --from git+https://github.com/Sppdd/900 sandcoder profile install",
+      "uvx --from git+https://github.com/Sppdd/900 sandcoder profile build",
+      "", "# then, in Claude Code / Codex / Cursor:",
+      "\"run the sandcoder panel on this repo\"   # picks up sandbox.toml automatically",
+    ].join("\n");
+    $("b-download").onclick = () => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([toml], { type: "text/plain" }));
+      a.download = "sandbox.toml"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    };
+  }
+  document.querySelector(".builder").addEventListener("input", render);
+  document.querySelector(".builder").addEventListener("change", render);
+  render();
   run();
 })();
 </script>
