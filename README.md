@@ -152,6 +152,8 @@ sandcoder models                       # NVIDIA models on Token Factory
 
 ## Website
 
+Live: **https://sandcoder-site-374753224662.us-central1.run.app**
+
 `site/` holds a static landing page (features, live-run replay, install, MCP reference), served by nginx on port 8080.
 `GCP_PROJECT=<id> ./deploy/deploy-site.sh` deploys it to **Google Cloud Run** from source (Cloud Build, so no local Docker needed). It scales to zero and needs no auth.
 

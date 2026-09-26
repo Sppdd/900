@@ -27,4 +27,4 @@ gcloud run deploy "$SERVICE" \
 
 URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format 'value(status.url)')
 echo "==> live at $URL"
-curl -fsS -o /dev/null -w "health: %{http_code}\n" "$URL/healthz" || true
+curl -fsS -o /dev/null -w "health: %{http_code}\n" "$URL/health" || true
