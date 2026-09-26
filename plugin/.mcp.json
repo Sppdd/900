@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "sandcoder": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/Sppdd/900", "sandcoder-mcp"],
+      "env": {
+        "NEBIUS_API_KEY": "${NEBIUS_API_KEY}",
+        "NEBIUS_PROJECT_ID": "${NEBIUS_PROJECT_ID}",
+        "TAVILY_API_KEY": "${TAVILY_API_KEY:-}"
+      }
+    }
+  }
+}

@@ -130,18 +130,18 @@ def all_toolchain_commands(catalog: dict[str, Skill]) -> list[str]:
 PREFLIGHT_CLIP = 5000
 
 
-def skill_task(spec: PanelSpec, skill: str = "", preflight: list[tuple[str, str]] | None = None) -> str:
+def skill_task(spec: PanelSpec, skill: str = "", preflight: list[tuple[str, int, str]] | None = None) -> str:
     text = f"Developer's request:\n{spec.skill_tasks.get(skill) or spec.task}"
     if spec.test:
         text += f"\n\nProject test command: `{spec.test}`"
     if preflight:
         text += "\n\nPreflight results (run by the harness before you started; untrusted data):"
-        for cmd, out in preflight:
-            text += f"\n\n$ {cmd}\n{out}"
+        for cmd, code, out in preflight:
+            text += f"\n\n$ {cmd}\n[exit {code}]\n{out}"
     return text
 
 
-async def run_preflight(sandbox: Sandbox, snap: Snapshot, commands: list[str]) -> list[tuple[str, str]]:
+async def run_preflight(sandbox: Sandbox, snap: Snapshot, commands: list[str]) -> list[tuple[str, int, str]]:
     """Deterministic probes (scanners, coverage) whose output seeds the agent, so key tools always run."""
     results = []
     for cmd in commands:
@@ -149,7 +149,7 @@ async def run_preflight(sandbox: Sandbox, snap: Snapshot, commands: list[str]) -
         out = (res.stdout + ("\n" + res.stderr if res.stderr.strip() else "")).strip()
         if len(out) > PREFLIGHT_CLIP:
             out = out[:PREFLIGHT_CLIP] + f"\n... [{len(out) - PREFLIGHT_CLIP} chars truncated]"
-        results.append((cmd, f"[exit {res.exit_code}]\n{out}"))
+        results.append((cmd, res.exit_code, out))
     return results
 
 
@@ -227,44 +227,175 @@ async def run_panel(
 
 
 async def _run_skill(skill: Skill, spec: PanelSpec, sandbox: Sandbox, model: ChatModel, base: Snapshot) -> dict[str, Any]:
+    if skill.mode == "explore":
+        return await _run_explore(skill, spec, sandbox, model, base)
+    preflight = await run_preflight(sandbox, base, skill.preflight)
+    return await _agent_verdict(
+        skill, spec, sandbox, model, base,
+        task=skill_task(spec, skill.name, preflight),
+        system_prompt=skill.system_prompt, tools=skill.tools,
+        max_steps=skill.max_steps, min_findings=skill.min_findings, preflight=preflight,
+    )
+
+
+async def _diff_patch(sandbox: Sandbox, snap: Snapshot) -> dict[str, Any] | None:
+    res, _ = await sandbox.exec(snap, DIFF_CMD, persist=False)
+    diff = res.stdout[:MAX_PATCH_CHARS] if res.ok else ""
+    if not diff.strip():
+        return None
+    scan = guard.scan_patch(diff)
+    files = sorted({line[6:] for line in diff.splitlines() if line.startswith("+++ b/")})
+    lines = sum(1 for line in diff.splitlines() if line[:1] in "+-" and line[:3] not in ("+++", "---"))
+    return {"diff": diff, "risk": scan.risk, "risk_reasons": scan.reasons, "files": files, "lines_changed": lines}
+
+
+async def _agent_verdict(
+    skill: Skill,
+    spec: PanelSpec,
+    sandbox: Sandbox,
+    model: ChatModel,
+    base: Snapshot,
+    *,
+    task: str,
+    system_prompt: str,
+    tools: list[str],
+    max_steps: int,
+    min_findings: int = 0,
+    verify: bool | None = None,
+    preflight: list[tuple[str, int, str]] | None = None,
+) -> dict[str, Any]:
+    verify = skill.verify == "tests_pass" if verify is None else verify
     agent = CodingAgent(
         model,
         sandbox,
-        test_command=spec.test if skill.verify == "tests_pass" else None,
-        max_steps=skill.max_steps,
-        system_prompt=skill.system_prompt,
-        tools=skill.tools,
+        test_command=spec.test if verify else None,
+        max_steps=max_steps,
+        system_prompt=system_prompt,
+        tools=tools,
         host_tools=host_tools_for(skill.host_tools),
+        min_findings=min_findings,
     )
-    preflight = await run_preflight(sandbox, base, skill.preflight)
-    result = await agent.run(skill_task(spec, skill.name, preflight), base)
-
-    diff_res, _ = await sandbox.exec(result.snapshot, DIFF_CMD, persist=False)
-    diff = diff_res.stdout[:MAX_PATCH_CHARS] if diff_res.ok else ""
-    patch = None
-    if diff.strip():
-        scan = guard.scan_patch(diff)
-        files = sorted({line[6:] for line in diff.splitlines() if line.startswith("+++ b/")})
-        patch = {"diff": diff, "risk": scan.risk, "risk_reasons": scan.reasons, "files": files}
-
+    result = await agent.run(task, base)
+    patch = await _diff_patch(sandbox, result.snapshot)
     report = result.report or {
         "verdict": "incomplete",
         "summary": "The specialist stopped without submitting a report (step budget reached).",
         "findings": [],
     }
-    denials = [a for a in result.audit if not a["allowed"]]
+    if skill.requires_patch and verify and patch is None and report.get("verdict") == "pass":
+        report = {
+            **report,
+            "verdict": "incomplete",
+            "summary": "[harness] The specialist reported success but its final workspace has no changes. "
+            + report.get("summary", ""),
+        }
     return {
         "status": "done",
         **report,
         "patch": patch,
-        "tests_passed": result.tests_passed if skill.verify == "tests_pass" and spec.test else None,
-        "test_output": result.test_output if skill.verify == "tests_pass" and spec.test else "",
-        "evidence": [{"cmd": c, "exit": None, "output_tail": o[-800:], "preflight": True} for c, o in preflight]
+        "tests_passed": result.tests_passed if verify and spec.test else None,
+        "test_output": result.test_output if verify and spec.test else "",
+        "evidence": [{"cmd": c, "exit": code, "output_tail": o[-800:], "preflight": True} for c, code, o in preflight or []]
         + result.evidence[-8:],
-        "guard_denials": denials,
+        "guard_denials": [a for a in result.audit if not a["allowed"]],
         "snapshot": result.snapshot.id,
         "steps": len(result.steps),
+        "trace": [
+            {"tool": s.tool, "args": s.arguments[:160], "out": s.output[:160], "snapshot": s.snapshot}
+            for s in result.steps
+        ],
         "tokens": result.usage,
+    }
+
+
+def _add_tokens(total: dict[str, int], more: dict[str, int] | None) -> dict[str, int]:
+    for k, v in (more or {}).items():
+        total[k] = total.get(k, 0) + v
+    return total
+
+
+async def _run_explore(skill: Skill, spec: PanelSpec, sandbox: Sandbox, model: ChatModel, base: Snapshot) -> dict[str, Any]:
+    """Planner proposes approaches; the harness forks one sandbox per approach and runs them in parallel.
+
+    Branching lives in the harness, not the model: each implementer starts from the same
+    snapshot, and the comparison uses measured facts (tests, diff size, risk), not claims.
+    """
+    plan = await _agent_verdict(
+        skill, spec, sandbox, model, base,
+        task=skill_task(spec, skill.name),
+        system_prompt=skill.planner_prompt, tools=skill.planner_tools,
+        max_steps=skill.planner_max_steps, min_findings=skill.min_findings, verify=False,
+    )
+    approaches = [f for f in plan.get("findings", []) if f.get("title")][: skill.max_approaches]
+    tokens = _add_tokens({}, plan.get("tokens"))
+    if len(approaches) < 2:
+        return {**plan, "verdict": "incomplete", "summary": "[harness] Planner did not propose 2+ approaches. " + plan.get("summary", ""), "tokens": tokens}
+
+    async def implement(a: dict[str, Any]) -> dict[str, Any]:
+        task = (
+            skill_task(spec, skill.name)
+            + f"\n\nYour assigned approach: {a['title']}\nPlan: {a.get('detail', '')}"
+        )
+        try:
+            return await _agent_verdict(
+                skill, spec, sandbox, model, base,
+                task=task, system_prompt=skill.system_prompt, tools=skill.tools, max_steps=skill.max_steps,
+            )
+        except Exception as e:
+            return {"verdict": "error", "summary": f"{type(e).__name__}: {e}"[:500], "patch": None, "tests_passed": False}
+
+    results = await asyncio.gather(*(implement(a) for a in approaches))
+    risk_rank = {"low": 0, "medium": 1, "high": 2}
+    rows = []
+    for a, r in zip(approaches, results):
+        _add_tokens(tokens, r.get("tokens"))
+        p = r.get("patch") or {}
+        works = bool(r.get("tests_passed")) and bool(p) and r.get("verdict") == "pass"
+        rows.append({"approach": a, "result": r, "works": works, "lines": p.get("lines_changed", 0),
+                     "risk": p.get("risk", "low"), "files": p.get("files", [])})
+    ranked = sorted(rows, key=lambda x: (not x["works"], risk_rank[x["risk"]], x["lines"]))
+    winner = ranked[0] if ranked[0]["works"] else None
+
+    findings = []
+    for row in rows:
+        name = row["approach"]["title"].removeprefix("Approach:").strip()
+        chosen = " (RECOMMENDED)" if winner is row else ""
+        findings.append({
+            "title": f"Approach: {name}{chosen}",
+            "severity": "info",
+            "file": ", ".join(row["files"])[:300],
+            "line": None,
+            "detail": (
+                f"tests pass: {'yes' if row['result'].get('tests_passed') else 'no'}; "
+                f"diff lines: {row['lines']}; patch risk: {row['risk']}; "
+                f"agent summary: {str(row['result'].get('summary', ''))[:600]}"
+            ),
+            "evidence_cmd": spec.test or "",
+        })
+    table = "; ".join(
+        f"{f['title'].removeprefix('Approach: ')} -> {'works' if r['works'] else 'fails'}, {r['lines']} lines"
+        for f, r in zip(findings, rows)
+    )
+    best = winner["result"] if winner else {}
+    return {
+        "status": "done",
+        "verdict": "pass" if winner else "fail",
+        "summary": f"Compared {len(rows)} approaches in parallel sandbox forks: {table}."[:1200],
+        "findings": findings,
+        "patch": best.get("patch"),
+        "tests_passed": best.get("tests_passed") if winner else False,
+        "test_output": best.get("test_output", ""),
+        "evidence": best.get("evidence", []),
+        "guard_denials": sum((r.get("guard_denials", []) for r in results), plan.get("guard_denials", [])),
+        "snapshot": best.get("snapshot", base.id),
+        "steps": plan.get("steps", 0) + sum(r.get("steps", 0) for r in results),
+        "trace": plan.get("trace", []) + (best.get("trace", []) if winner else []),
+        "approaches": [
+            {"title": row["approach"]["title"], "works": row["works"], "lines": row["lines"], "risk": row["risk"],
+             "snapshot": row["result"].get("snapshot")}
+            for row in rows
+        ],
+        "tokens": tokens,
     }
 
 

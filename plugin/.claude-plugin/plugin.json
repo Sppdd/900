@@ -1,0 +1,9 @@
+{
+  "name": "sandcoder",
+  "version": "0.2.0",
+  "description": "Run a panel of sandboxed specialist agents (security audit, tests, bug repro, feature research) on Nebius Token Factory Sandboxes and get evidence-backed verdicts and diffs.",
+  "author": { "name": "sandcoder contributors" },
+  "homepage": "https://github.com/Sppdd/900",
+  "license": "MIT",
+  "keywords": ["sandbox", "security", "testing", "nebius", "nemotron", "mcp"]
+}

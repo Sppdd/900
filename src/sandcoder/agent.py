@@ -79,6 +79,7 @@ class CodingAgent:
         tools: list[str] | None = None,
         host_tools: dict[str, HostTool] | None = None,
         use_guard: bool = True,
+        min_findings: int = 0,
     ) -> None:
         self.model = model
         self.sandbox = sandbox
@@ -89,13 +90,14 @@ class CodingAgent:
         self.tools = tools  # None = all built-in tools; a list enables a subset (+ "report")
         self.host_tools = host_tools or {}
         self.use_guard = use_guard
+        self.min_findings = min_findings
         self.schemas = schemas_for(tools, self.host_tools)
         self.end_tool = "report" if tools is not None and "report" in tools else "finish"
 
     async def run(self, task: str, snapshot: Snapshot) -> AgentResult:
         ws = Workspace(
             self.sandbox, snapshot, test_command=self.test_command,
-            host_tools=self.host_tools, use_guard=self.use_guard,
+            host_tools=self.host_tools, use_guard=self.use_guard, min_findings=self.min_findings,
         )
         user = f"Task:\n{task}"
         if self.test_command:

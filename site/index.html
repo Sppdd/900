@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sandcoder panel</title>
+<meta name="description" content="Give your coding agent a panel of sandboxed specialists: security audits with proof-of-concept tests, test writing, bug reproduction and feature research, run in parallel on Nebius Token Factory Sandboxes with NVIDIA Nemotron.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2311151c'/><rect x='6' y='8' width='8' height='16' rx='2' fill='%237ee2b8'/><rect x='18' y='8' width='8' height='7' rx='2' fill='%23f5c46b'/><rect x='18' y='17' width='8' height='7' rx='2' fill='%2389a8ff'/></svg>">
+<style>
+:root {
+  --bg: #fbfbf9; --bg-2: #f2f2ee; --panel: #ffffff; --ink: #14171c; --ink-2: #4a5160; --ink-3: #7b8292;
+  --line: #e2e3de; --accent: #0f8a5f; --accent-soft: #e2f4ec; --warn: #a86400; --warn-soft: #fbf0dc;
+  --bad: #c0392b; --bad-soft: #fbe6e3; --info: #3552c8; --info-soft: #e6ebfb;
+  --code-bg: #11151c; --code-ink: #dfe4ec; --code-dim: #7d8696;
+  --radius: 14px; --shadow: 0 1px 2px rgba(20,23,28,.05), 0 8px 24px rgba(20,23,28,.06);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0c0f14; --bg-2: #11151c; --panel: #151a22; --ink: #e8ebf0; --ink-2: #aab2c0; --ink-3: #7d8696;
+    --line: #242b36; --accent: #7ee2b8; --accent-soft: #11291f; --warn: #f5c46b; --warn-soft: #2b2212;
+    --bad: #ff8a7a; --bad-soft: #2d1714; --info: #89a8ff; --info-soft: #151d33;
+    --code-bg: #0a0d12; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0c0f14; --bg-2: #11151c; --panel: #151a22; --ink: #e8ebf0; --ink-2: #aab2c0; --ink-3: #7d8696;
+  --line: #242b36; --accent: #7ee2b8; --accent-soft: #11291f; --warn: #f5c46b; --warn-soft: #2b2212;
+  --bad: #ff8a7a; --bad-soft: #2d1714; --info: #89a8ff; --info-soft: #151d33;
+  --code-bg: #0a0d12; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+a { color: inherit; }
+code, pre, .mono { font-family: var(--mono); }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+@media (max-width: 600px) { .wrap { padding: 0 16px; } }
+
+/* nav */
+nav { position: sticky; top: 0; z-index: 10; backdrop-filter: saturate(1.4) blur(10px); background: color-mix(in srgb, var(--bg) 82%, transparent); border-bottom: 1px solid var(--line); }
+nav .wrap { display: flex; align-items: center; gap: 24px; height: 58px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; text-decoration: none; letter-spacing: -.01em; }
+.logo { width: 24px; height: 24px; }
+nav .links { display: flex; gap: 20px; margin-left: auto; font-size: 14px; color: var(--ink-2); }
+nav .links a { text-decoration: none; }
+nav .links a:hover { color: var(--ink); }
+.theme-btn { border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); border-radius: 8px; width: 34px; height: 34px; cursor: pointer; font-size: 15px; }
+@media (max-width: 760px) { nav .links { display: none; } .theme-btn { margin-left: auto; } }
+
+/* hero */
+.hero { padding: 72px 0 40px; }
+.eyebrow { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink-2); border: 1px solid var(--line); background: var(--panel); padding: 5px 12px; border-radius: 999px; }
+.eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+h1 { font-size: clamp(34px, 5.2vw, 58px); line-height: 1.06; letter-spacing: -.035em; margin: 20px 0 18px; max-width: 900px; font-weight: 700; }
+h1 em { font-style: normal; color: var(--accent); }
+.lede { font-size: clamp(17px, 2vw, 20px); color: var(--ink-2); max-width: 720px; margin: 0 0 28px; }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 18px; border-radius: 10px; font-weight: 600; font-size: 15px; text-decoration: none; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.btn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.btn:hover { transform: translateY(-1px); }
+.btn { transition: transform .15s ease; }
+
+/* demo */
+.demo { margin-top: 44px; display: grid; grid-template-columns: 1.05fr 1fr; gap: 18px; }
+@media (max-width: 920px) { .demo { grid-template-columns: 1fr; } }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.term { background: var(--code-bg); color: var(--code-ink); border-radius: var(--radius); overflow: hidden; border: 1px solid #1d232d; box-shadow: var(--shadow); min-height: 380px; display: flex; flex-direction: column; }
+.term-bar { display: flex; align-items: center; gap: 7px; padding: 11px 14px; border-bottom: 1px solid #1d232d; font: 12px var(--mono); color: var(--code-dim); }
+.term-bar i { width: 10px; height: 10px; border-radius: 50%; background: #2a313c; display: inline-block; }
+.term-bar span { margin-left: 8px; }
+.term-body { padding: 16px 18px; font: 13px/1.65 var(--mono); flex: 1; overflow: hidden; }
+.term-body .l { opacity: 0; transform: translateY(4px); transition: opacity .35s ease, transform .35s ease; white-space: pre-wrap; word-break: break-word; }
+.term-body .l.on { opacity: 1; transform: none; }
+.u { color: #f5c46b; } .t { color: #89a8ff; } .g { color: #7ee2b8; } .r { color: #ff8a7a; } .d { color: var(--code-dim); }
+.lanes { padding: 16px; display: grid; gap: 12px; align-content: start; }
+.lanes-head { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 4px 0; }
+.lanes-head b { font-size: 14px; }
+.lanes-head span { font: 12px var(--mono); color: var(--ink-3); }
+.lane { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--bg); position: relative; overflow: hidden; }
+.lane-top { display: flex; align-items: center; gap: 10px; }
+.lane-name { font: 600 13px var(--mono); }
+.pill { margin-left: auto; font: 600 11px var(--mono); padding: 3px 9px; border-radius: 999px; background: var(--bg-2); color: var(--ink-3); text-transform: uppercase; letter-spacing: .04em; }
+.pill.run { color: var(--info); background: var(--info-soft); }
+.pill.find { color: var(--bad); background: var(--bad-soft); }
+.pill.ok { color: var(--accent); background: var(--accent-soft); }
+.pill.fail { color: var(--warn); background: var(--warn-soft); }
+.lane p { margin: 8px 0 0; font-size: 13.5px; color: var(--ink-2); min-height: 21px; }
+.bar { height: 3px; background: var(--bg-2); border-radius: 3px; margin-top: 10px; overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--info); border-radius: 3px; transition: width .6s linear; }
+.lane.done .bar > i { background: var(--accent); }
+.meta { display: flex; gap: 14px; margin-top: 8px; font: 11.5px var(--mono); color: var(--ink-3); flex-wrap: wrap; }
+.replay { font: 12px var(--mono); color: var(--ink-3); text-align: right; padding: 0 4px; }
+.replay button { background: none; border: 0; color: var(--ink-2); text-decoration: underline; cursor: pointer; font: inherit; }
+.note { font-size: 12.5px; color: var(--ink-3); margin-top: 12px; }
+
+/* sections */
+section { padding: 64px 0; }
+section.alt { background: var(--bg-2); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+h2 { font-size: clamp(26px, 3.4vw, 36px); letter-spacing: -.025em; line-height: 1.15; margin: 0 0 12px; }
+.sub { color: var(--ink-2); max-width: 700px; margin: 0 0 36px; font-size: 17px; }
+.grid { display: grid; gap: 16px; }
+.g4 { grid-template-columns: repeat(4, 1fr); } .g3 { grid-template-columns: repeat(3, 1fr); } .g2 { grid-template-columns: repeat(2, 1fr); }
+@media (max-width: 960px) { .g4 { grid-template-columns: repeat(2, 1fr); } .g3 { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .g4, .g2 { grid-template-columns: 1fr; } }
+.feat { padding: 22px; }
+.feat h3 { margin: 12px 0 6px; font-size: 17px; letter-spacing: -.01em; }
+.feat p { margin: 0; color: var(--ink-2); font-size: 14.5px; }
+.feat .icon { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; }
+.feat .ret { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); font: 12px var(--mono); color: var(--ink-3); }
+
+/* flow diagram */
+.flow { padding: 24px; overflow-x: auto; }
+.flow svg { width: 100%; min-width: 720px; height: auto; display: block; }
+.flow text { font-family: var(--sans); fill: var(--ink); }
+.flow .sm { font-size: 12px; fill: var(--ink-3); font-family: var(--mono); }
+.flow .box { fill: var(--panel); stroke: var(--line); }
+.flow .edge { stroke: var(--ink-3); stroke-width: 1.4; fill: none; }
+.flow .pulse { stroke: var(--accent); stroke-width: 2; fill: none; stroke-dasharray: 6 10; animation: dash 1.6s linear infinite; }
+@keyframes dash { to { stroke-dashoffset: -32; } }
+@media (prefers-reduced-motion: reduce) { .flow .pulse { animation: none; } .term-body .l { transition: none; } }
+
+/* safety */
+.layer { display: grid; grid-template-columns: 44px 1fr; gap: 14px; padding: 18px 20px; align-items: start; }
+.layer .n { width: 32px; height: 32px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font: 700 14px var(--mono); }
+.layer h3 { margin: 4px 0 4px; font-size: 16px; }
+.layer p { margin: 0; color: var(--ink-2); font-size: 14.5px; }
+.callout { margin-top: 16px; padding: 14px 18px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); font-size: 14.5px; color: var(--ink-2); }
+
+/* install */
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.tab { border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); padding: 7px 14px; border-radius: 9px; cursor: pointer; font-weight: 600; font-size: 14px; }
+.tab[aria-selected="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.code { position: relative; background: var(--code-bg); color: var(--code-ink); border-radius: 12px; padding: 18px 20px; font: 13.5px/1.7 var(--mono); overflow-x: auto; border: 1px solid #1d232d; }
+.code pre { margin: 0; white-space: pre; }
+.copy { position: absolute; top: 10px; right: 10px; background: #1d232d; color: var(--code-ink); border: 1px solid #2a313c; border-radius: 7px; font: 12px var(--mono); padding: 4px 10px; cursor: pointer; }
+.steps { counter-reset: s; list-style: none; padding: 0; margin: 20px 0 0; display: grid; gap: 10px; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 28px 1fr; gap: 10px; color: var(--ink-2); font-size: 15px; }
+.steps li::before { content: counter(s); width: 24px; height: 24px; border-radius: 7px; background: var(--bg-2); border: 1px solid var(--line); display: grid; place-items: center; font: 600 12px var(--mono); color: var(--ink); }
+.steps code { background: var(--bg-2); border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; font-size: 13px; color: var(--ink); }
+
+/* tables */
+table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); font-weight: 600; }
+td code { font-size: 13px; color: var(--ink); background: var(--bg-2); padding: 2px 6px; border-radius: 5px; border: 1px solid var(--line); white-space: nowrap; }
+td { color: var(--ink-2); }
+.tbl { overflow-x: auto; padding: 4px 6px; }
+
+/* pricing */
+.price { padding: 26px; }
+.price h3 { margin: 0 0 4px; font-size: 18px; }
+.price .amt { font-size: 30px; font-weight: 700; letter-spacing: -.02em; margin: 10px 0; }
+.price ul { padding-left: 18px; margin: 12px 0 0; color: var(--ink-2); font-size: 14.5px; }
+.tag { display: inline-block; font: 600 11px var(--mono); padding: 3px 8px; border-radius: 6px; background: var(--warn-soft); color: var(--warn); text-transform: uppercase; letter-spacing: .05em; }
+.tag.live { background: var(--accent-soft); color: var(--accent); }
+
+footer { padding: 36px 0 48px; color: var(--ink-3); font-size: 14px; border-top: 1px solid var(--line); }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 24px; justify-content: space-between; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#11151c"/><rect x="6" y="8" width="8" height="16" rx="2" fill="#7ee2b8"/><rect x="18" y="8" width="8" height="7" rx="2" fill="#f5c46b"/><rect x="18" y="17" width="8" height="7" rx="2" fill="#89a8ff"/></svg>
+      sandcoder
+    </a>
+    <div class="links">
+      <a href="#how">How it works</a>
+      <a href="#specialists">Specialists</a>
+      <a href="#safety">Safety</a>
+      <a href="#install">Install</a>
+      <a href="#reference">MCP reference</a>
+      <a href="https://github.com/Sppdd/900">GitHub</a>
+    </div>
+    <button class="theme-btn" id="theme" aria-label="Toggle color theme">◐</button>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <span class="eyebrow"><span class="dot"></span>MCP server + Claude Code plugin · Nebius Token Factory · NVIDIA Nemotron</span>
+    <h1>Give your coding agent a <em>panel of sandboxed specialists</em>.</h1>
+    <p class="lede">Your agent asks. A security auditor, a test writer, a bug reproducer and a feature researcher each fork the same snapshot of your repo in an isolated Nebius sandbox, run real tools in parallel, and return evidence your agent can act on: proof-of-concept tests, passing test patches, failing regression tests. Your laptop never runs their code, and your secrets never leave it.</p>
+    <div class="cta">
+      <a class="btn primary" href="#install">Install in 1 minute</a>
+      <a class="btn" href="https://github.com/Sppdd/900">View source</a>
+    </div>
+
+    <div class="demo" aria-label="Replay of a real panel run">
+      <div class="term">
+        <div class="term-bar"><i></i><i></i><i></i><span>claude code · examples/buggy-api</span></div>
+        <div class="term-body" id="term"></div>
+      </div>
+      <div class="card lanes" id="lanes">
+        <div class="lanes-head"><b>Panel run</b><span id="clock">0.0s</span></div>
+      </div>
+    </div>
+    <p class="note">Replayed from real runs on 26 Sep 2026 (Nemotron 3 Super on Token Factory Sandboxes, <code class="mono">examples/buggy-api</code>). Results, steps and token counts are as recorded; the security lane comes from a re-run after a reporting fix. Longest specialist took 117 s; shown at 20× speed.</p>
+  </div>
+</header>
+
+<section class="alt" id="how">
+  <div class="wrap">
+    <h2>One snapshot, many specialists, evidence back</h2>
+    <p class="sub">Token Factory Sandboxes save an immutable snapshot after every step. sandcoder builds the project once, then forks it for each specialist, so they run in parallel from exactly the same state and none of them can affect the others.</p>
+    <div class="card flow">
+      <svg viewBox="0 0 1040 320" role="img" aria-label="Flow: your agent calls panel_run; project is uploaded without secrets; a cached toolchain snapshot is forked into four specialists; verdicts and diffs return to your agent.">
+        <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor" style="color:var(--ink-3)"/></marker></defs>
+        <rect class="box" x="2" y="110" width="204" height="80" rx="12"/>
+        <text x="104" y="145" text-anchor="middle" font-weight="650">Your coding agent</text>
+        <text x="104" y="168" text-anchor="middle" class="sm">Claude Code · Codex · Cursor</text>
+
+        <rect class="box" x="240" y="110" width="190" height="80" rx="12"/>
+        <text x="335" y="145" text-anchor="middle" font-weight="650">sandcoder-mcp</text>
+        <text x="335" y="168" text-anchor="middle" class="sm">upload, no .env / keys</text>
+
+        <rect class="box" x="490" y="110" width="170" height="80" rx="12"/>
+        <text x="575" y="140" text-anchor="middle" font-weight="650">Base snapshot</text>
+        <text x="575" y="160" text-anchor="middle" class="sm">cached toolchain</text>
+        <text x="575" y="176" text-anchor="middle" class="sm">+ repo + deps</text>
+
+        <g>
+          <rect class="box" x="730" y="14" width="190" height="52" rx="10"/><text x="825" y="45" text-anchor="middle" font-size="14">security-auditor</text>
+          <rect class="box" x="730" y="82" width="190" height="52" rx="10"/><text x="825" y="113" text-anchor="middle" font-size="14">test-writer</text>
+          <rect class="box" x="730" y="150" width="190" height="52" rx="10"/><text x="825" y="181" text-anchor="middle" font-size="14">bug-reproducer</text>
+          <rect class="box" x="730" y="218" width="190" height="52" rx="10"/><text x="825" y="249" text-anchor="middle" font-size="14">feature-researcher</text>
+        </g>
+        <text x="990" y="120" text-anchor="middle" class="sm">verdicts</text>
+        <text x="990" y="138" text-anchor="middle" class="sm">+ evidence</text>
+        <text x="990" y="156" text-anchor="middle" class="sm">+ risk-rated</text>
+        <text x="990" y="174" text-anchor="middle" class="sm">diffs</text>
+
+        <path class="edge" d="M206 150 H236" marker-end="url(#arr)"/>
+        <path class="edge" d="M430 150 H486" marker-end="url(#arr)"/>
+        <path class="edge" d="M660 150 C700 150 690 40 726 40" marker-end="url(#arr)"/>
+        <path class="edge" d="M660 150 C700 150 690 108 726 108" marker-end="url(#arr)"/>
+        <path class="edge" d="M660 150 C700 150 690 176 726 176" marker-end="url(#arr)"/>
+        <path class="edge" d="M660 150 C700 150 690 244 726 244" marker-end="url(#arr)"/>
+        <path class="pulse" d="M206 150 H236 M430 150 H486"/>
+        <path class="pulse" d="M660 150 C700 150 690 40 726 40 M660 150 C700 150 690 244 726 244"/>
+        <path class="edge" d="M920 40 C960 40 950 110 960 110" />
+        <path class="edge" d="M920 244 C960 244 950 185 960 185" />
+        <path class="edge" d="M104 190 V290 H990 V190" stroke-dasharray="4 5" marker-start="url(#arr)"/>
+        <text x="540" y="310" text-anchor="middle" class="sm">panel_results(run_id): async; your agent keeps working meanwhile</text>
+      </svg>
+    </div>
+    <div class="grid g3" style="margin-top:16px">
+      <div class="card feat"><h3>Parallel from one state</h3><p>Setup runs once. Each specialist forks the same snapshot, so a 4-specialist panel costs 4 agent loops, not 4 environment builds.</p></div>
+      <div class="card feat"><h3>Executed evidence</h3><p>Each finding carries the command that proves it, and every result links to a snapshot you can re-run. They are tests and diffs, not opinions.</p></div>
+      <div class="card feat"><h3>Cheap models do the grunt work</h3><p>NVIDIA Nemotron on Token Factory runs the loops. Your main model only reads short, structured verdicts, which keeps its context clean.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="specialists">
+  <div class="wrap">
+    <h2>The specialists</h2>
+    <p class="sub">Each specialist is a folder of data: a <code class="mono">SKILL.md</code> with its role and method, and a <code class="mono">skill.toml</code> with its tools, budgets, toolchain and preflight probes. Add your own without writing code.</p>
+    <div class="grid g4">
+      <div class="card feat">
+        <div class="icon" style="background:var(--bad-soft);color:var(--bad)">⛨</div>
+        <h3>security-auditor</h3>
+        <p>Runs bandit, semgrep and pip-audit, reviews what scanners miss, and tries to prove each serious issue with a failing proof-of-concept test.</p>
+        <div class="ret">returns: findings · PoC tests · fix patch</div>
+      </div>
+      <div class="card feat">
+        <div class="icon" style="background:var(--accent-soft);color:var(--accent)">✓</div>
+        <h3>test-writer</h3>
+        <p>Measures coverage, writes tests for untested paths in your project's style, and keeps only tests that pass. Tests that expose a bug come back as findings instead.</p>
+        <div class="ret">returns: test patch · coverage delta</div>
+      </div>
+      <div class="card feat">
+        <div class="icon" style="background:var(--warn-soft);color:var(--warn)">⟲</div>
+        <h3>bug-reproducer</h3>
+        <p>Turns a bug report into the smallest regression test that fails for the right reason. It doesn't fix anything; it pins the bug down.</p>
+        <div class="ret">returns: failing test · root cause</div>
+      </div>
+      <div class="card feat">
+        <div class="icon" style="background:var(--info-soft);color:var(--info)">⌕</div>
+        <h3>feature-researcher</h3>
+        <p>A planner proposes 2–3 approaches (optionally with Tavily web search). Each one is implemented in its own parallel sandbox fork, and the harness picks the winner from measured facts: tests, diff size and risk.</p>
+        <div class="ret">returns: comparison · recommended patch</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="alt" id="safety">
+  <div class="wrap">
+    <h2>Built for untrusted code and prompt injection</h2>
+    <p class="sub">Specialists read your code, README, issues and web pages, and any of those can contain instructions aimed at an AI. sandcoder assumes some of it will be hostile.</p>
+    <div class="grid g2">
+      <div class="card layer"><div class="n">1</div><div><h3>Isolation, the real boundary</h3><p>Every specialist runs in a VM-isolated, disposable sandbox with no credentials. Model and web-search calls run in the MCP process, so API keys never enter a sandbox.</p></div></div>
+      <div class="card layer"><div class="n">2</div><div><h3>Secrets never uploaded</h3><p>Uploads respect <code class="mono">.gitignore</code> and always drop <code class="mono">.env</code>, private keys, <code class="mono">.npmrc</code>, tfstate and other credential files.</p></div></div>
+      <div class="card layer"><div class="n">3</div><div><h3>Command guard</h3><p>Every shell command is checked first. Exfiltration, <code class="mono">curl | sh</code>, env dumps, <code class="mono">~/.ssh</code> reads, reverse shells, miners and unknown hosts are denied and logged.</p></div></div>
+      <div class="card layer"><div class="n">4</div><div><h3>Patch risk scanner</h3><p>Every diff is rated before your agent sees it. Weakened tests, CI edits, new dependencies, network calls, eval and encoded blobs are flagged with reasons.</p></div></div>
+      <div class="card layer"><div class="n">5</div><div><h3>Results are data</h3><p>Verdicts are schema-validated and length-capped. The plugin skill tells your agent never to follow instructions inside results and never to apply a patch without showing you the diff.</p></div></div>
+      <div class="card layer"><div class="n">6</div><div><h3>Versioned skills</h3><p>Each skill is identified by a content hash reported with every result, so you always know exactly which instructions ran.</p></div></div>
+    </div>
+    <div class="callout">Honest scope: layers 3 and 4 catch common attacks, not a determined adversary. Isolation, and you reviewing the diff, are what keep you safe.</div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Install</h2>
+    <p class="sub">You need a Nebius Token Factory API key and a project id with Sandboxes enabled, plus <code class="mono">uv</code>. The software is free and open source; tokens and sandbox time bill to your own Nebius account.</p>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="true" data-tab="plugin">Claude Code plugin</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="cc">Claude Code (MCP only)</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="codex">Codex</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="cursor">Cursor</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="cli">CLI</button>
+    </div>
+    <div class="code" data-panel="plugin"><button class="copy">copy</button><pre># 1. credentials (add to your shell profile)
+export NEBIUS_API_KEY="…"          # Token Factory API key
+export NEBIUS_PROJECT_ID="…"       # project with Sandboxes enabled
+export TAVILY_API_KEY="…"          # optional, for feature-researcher
+
+# 2. inside Claude Code
+/plugin marketplace add Sppdd/900
+/plugin install sandcoder@sandcoder</pre></div>
+    <div class="code" data-panel="cc" hidden><button class="copy">copy</button><pre>claude mcp add sandcoder \
+  -e NEBIUS_API_KEY="$NEBIUS_API_KEY" -e NEBIUS_PROJECT_ID="$NEBIUS_PROJECT_ID" \
+  -- uvx --from git+https://github.com/Sppdd/900 sandcoder-mcp</pre></div>
+    <div class="code" data-panel="codex" hidden><button class="copy">copy</button><pre># ~/.codex/config.toml
+[mcp_servers.sandcoder]
+command = "uvx"
+args = ["--from", "git+https://github.com/Sppdd/900", "sandcoder-mcp"]
+env = { NEBIUS_API_KEY = "…", NEBIUS_PROJECT_ID = "…" }</pre></div>
+    <div class="code" data-panel="cursor" hidden><button class="copy">copy</button><pre>// .cursor/mcp.json
+{
+  "mcpServers": {
+    "sandcoder": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/Sppdd/900", "sandcoder-mcp"],
+      "env": { "NEBIUS_API_KEY": "…", "NEBIUS_PROJECT_ID": "…" }
+    }
+  }
+}</pre></div>
+    <div class="code" data-panel="cli" hidden><button class="copy">copy</button><pre>uvx --from git+https://github.com/Sppdd/900 sandcoder panel \
+  "pre-merge check" -w . -s security-auditor,test-writer -t "python -m pytest -q"</pre></div>
+
+    <h3 style="margin:36px 0 4px">Then just ask</h3>
+    <ol class="steps">
+      <li><span>"Check this repo before I open the PR." Your agent calls <code>panel_run</code> with <code>security-auditor</code> and <code>test-writer</code> and keeps working.</span></li>
+      <li><span>A few minutes later it calls <code>panel_results</code> and summarizes blocking findings first, each with file, line and proving command.</span></li>
+      <li><span>It shows each patch as a diff with its risk rating from <code>panel_patch</code>, and applies it only if you say so.</span></li>
+      <li><span>Shortcuts: <code>/panel</code>, or the MCP prompts <code>panel_premerge</code>, <code>panel_repro</code> and <code>panel_research</code>.</span></li>
+    </ol>
+  </div>
+</section>
+
+<section class="alt" id="reference">
+  <div class="wrap">
+    <h2>MCP reference</h2>
+    <p class="sub">A deliberately small surface. Runs are asynchronous, and everything a specialist returns is untrusted data.</p>
+    <div class="card tbl">
+      <table>
+        <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>panel_run</code></td><td>Starts specialists on a copy of the project. Args: <code>task</code>, <code>skills</code>, <code>path</code>, <code>test</code>, <code>setup</code>, <code>image</code>, <code>skill_tasks</code>. Returns a <code>run_id</code> immediately.</td></tr>
+          <tr><td><code>panel_results</code></td><td>Verdicts, findings, test status, patch summaries, guard denials and token use. <code>wait_seconds</code> (max 120) blocks until done.</td></tr>
+          <tr><td><code>panel_patch</code></td><td>One specialist's unified diff with its risk level and reasons. Review it before applying.</td></tr>
+          <tr><td><code>panel_cancel</code></td><td>Cancels a running panel.</td></tr>
+          <tr><td><code>panel_runs</code></td><td>Recent runs with status and task.</td></tr>
+          <tr><td><code>skills_list</code></td><td>Available specialists, with descriptions and version hashes.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="grid g2" style="margin-top:16px">
+      <div class="card tbl"><table><thead><tr><th>Prompt</th><th>Use</th></tr></thead><tbody>
+        <tr><td><code>panel_premerge</code></td><td>Security audit + tests on current changes</td></tr>
+        <tr><td><code>panel_repro</code></td><td>Bug report → failing regression test</td></tr>
+        <tr><td><code>panel_research</code></td><td>Prototype and compare approaches</td></tr>
+      </tbody></table></div>
+      <div class="card tbl"><table><thead><tr><th>Environment</th><th>Purpose</th></tr></thead><tbody>
+        <tr><td><code>NEBIUS_API_KEY</code></td><td>Token Factory inference + Sandboxes</td></tr>
+        <tr><td><code>NEBIUS_PROJECT_ID</code></td><td>Project with Sandboxes enabled</td></tr>
+        <tr><td><code>SANDCODER_MODEL</code></td><td>Default <code>nvidia/nemotron-3-super-120b-a12b</code></td></tr>
+        <tr><td><code>TAVILY_API_KEY</code></td><td>Optional web search for the researcher</td></tr>
+        <tr><td><code>SANDCODER_SKILLS_PATH</code></td><td>Extra skill folders</td></tr>
+      </tbody></table></div>
+    </div>
+  </div>
+</section>
+
+<section id="pricing">
+  <div class="wrap">
+    <h2>Pricing</h2>
+    <p class="sub">Open source and bring-your-own-key today. A hosted option is planned.</p>
+    <div class="grid g2">
+      <div class="card price">
+        <span class="tag live">Available now</span>
+        <h3 style="margin-top:12px">Bring your own key</h3>
+        <div class="amt">Free <span style="font-size:15px;color:var(--ink-3);font-weight:500">MIT license</span></div>
+        <ul><li>All specialists, guard and MCP tools</li><li>Nemotron tokens and sandbox time bill to your Nebius account</li><li>Runs and diffs stay on your machine (<code class="mono">~/.sandcoder/runs</code>)</li></ul>
+      </div>
+      <div class="card price">
+        <span class="tag">Planned</span>
+        <h3 style="margin-top:12px">Hosted</h3>
+        <div class="amt">Credits</div>
+        <ul><li>Browser login, no Nebius account needed</li><li>Pay per run: tokens + sandbox seconds</li><li>Team spend caps and shareable run pages</li></ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>sandcoder · MIT · runs on Nebius Token Factory Sandboxes with NVIDIA Nemotron models</span>
+    <span><a href="https://github.com/Sppdd/900">GitHub</a> · <a href="https://docs.tokenfactory.nebius.com/sandboxes/overview">Token Factory Sandboxes docs</a></span>
+  </div>
+</footer>
+
+<script>
+(() => {
+  // theme toggle (per-viewer convenience only)
+  const root = document.documentElement;
+  try { const t = localStorage.getItem("theme"); if (t) root.dataset.theme = t; } catch (e) {}
+  document.getElementById("theme").addEventListener("click", () => {
+    const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    root.dataset.theme = dark ? "light" : "dark";
+    try { localStorage.setItem("theme", root.dataset.theme); } catch (e) {}
+  });
+
+  // install tabs + copy
+  document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(t => t.setAttribute("aria-selected", t === tab));
+    document.querySelectorAll("[data-panel]").forEach(p => p.hidden = p.dataset.panel !== tab.dataset.tab);
+  }));
+  document.querySelectorAll(".copy").forEach(b => b.addEventListener("click", async () => {
+    const text = b.parentElement.querySelector("pre").innerText;
+    try { await navigator.clipboard.writeText(text); b.textContent = "copied"; } catch (e) { b.textContent = "select + copy"; }
+    setTimeout(() => b.textContent = "copy", 1500);
+  }));
+
+  // replay of real runs 20260926-102416 (tests, repro) and 20260926-103246 (security), timings compressed 20x
+  const SPEED = 20;
+  const lanes = [
+    { name: "security-auditor", secs: 50.0, steps: 12, tok: "48.3k", pill: ["find", "findings"],
+      text: "Medium: SQL injection in app/users.py:6 (f-string query). PoC test added; patch switches to a parameterized query." },
+    { name: "test-writer", secs: 116.9, steps: 23, tok: "118k", pill: ["ok", "pass"],
+      text: "+5 tests for routes, errors and pricing. Coverage 67% → 100%. All tests pass (verified by the harness)." },
+    { name: "bug-reproducer", secs: 15.2, steps: 6, tok: "13.7k", pill: ["fail", "reproduced"],
+      text: "Failing regression test: line_total(100, 2.0) returns 200.0, expected 180.0. Cause: `>` instead of `>=` at pricing.py:10." },
+  ];
+  const script = [
+    [0, '<span class="u">you ›</span> check this repo before I open the PR'],
+    [0.6, '<span class="t">● panel_run</span>(skills=[security-auditor, test-writer, bug-reproducer], test="python -m pytest -q")'],
+    [1.2, '<span class="d">  ⎿ run 20260926-102416 started · 10 files uploaded · .env skipped</span>'],
+    [1.8, 'Panel is running in Nebius sandboxes. Meanwhile, let me look at the pricing module…'],
+    [6.2, '<span class="t">● panel_results</span>(run_id, wait_seconds=60)'],
+    [7.2, '<span class="r">✗ security</span>  SQL injection in app/users.py:6, proven by PoC test'],
+    [7.7, '<span class="u">⟲ repro</span>     bulk discount off-by-one at 100 units (failing test attached)'],
+    [8.2, '<span class="g">✓ tests</span>     +5 tests, coverage 67% → 100% · patch risk: low'],
+    [8.9, 'Want me to show the security patch diff first?'],
+  ];
+  const term = document.getElementById("term");
+  const box = document.getElementById("lanes");
+  const clock = document.getElementById("clock");
+  const els = lanes.map(l => {
+    const d = document.createElement("div");
+    d.className = "lane";
+    d.innerHTML = `<div class="lane-top"><span class="lane-name">${l.name}</span><span class="pill">queued</span></div>
+      <p></p><div class="bar"><i></i></div><div class="meta"></div>`;
+    box.appendChild(d);
+    return d;
+  });
+  const replay = document.createElement("div");
+  replay.className = "replay";
+  replay.innerHTML = '<button type="button">replay</button>';
+  box.appendChild(replay);
+
+  let timers = [], raf = 0;
+  function run() {
+    timers.forEach(clearTimeout); cancelAnimationFrame(raf); timers = [];
+    term.innerHTML = "";
+    script.forEach(([t, html]) => {
+      const l = document.createElement("div"); l.className = "l"; l.innerHTML = html; term.appendChild(l);
+      timers.push(setTimeout(() => l.classList.add("on"), t * 1000));
+    });
+    const start = performance.now() + 1200;
+    els.forEach((el, i) => {
+      el.classList.remove("done");
+      const pill = el.querySelector(".pill"); pill.className = "pill"; pill.textContent = "queued";
+      el.querySelector("p").textContent = ""; el.querySelector(".meta").textContent = "";
+      el.querySelector(".bar > i").style.width = "0";
+      timers.push(setTimeout(() => { pill.className = "pill run"; pill.textContent = "running"; el.querySelector("p").textContent = "forked from base snapshot…"; }, 1200));
+    });
+    const tick = now => {
+      const t = Math.max(0, (now - start) / 1000 * SPEED);
+      clock.textContent = Math.min(t, 116.9).toFixed(1) + "s";
+      let all = true;
+      lanes.forEach((l, i) => {
+        const el = els[i];
+        el.querySelector(".bar > i").style.width = Math.min(100, t / l.secs * 100) + "%";
+        if (t >= l.secs && !el.classList.contains("done")) {
+          el.classList.add("done");
+          const pill = el.querySelector(".pill"); pill.className = "pill " + l.pill[0]; pill.textContent = l.pill[1];
+          el.querySelector("p").textContent = l.text;
+          el.querySelector(".meta").innerHTML = `<span>${l.secs}s</span><span>${l.steps} steps</span><span>${l.tok} tokens</span><span>0 guard denials</span>`;
+        }
+        if (t < l.secs) all = false;
+      });
+      if (!all) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+  }
+  replay.querySelector("button").addEventListener("click", run);
+  run();
+})();
+</script>
+</body>
+</html>

@@ -1,7 +1,13 @@
 name = "feature-researcher"
-description = "Researches 2-3 ways to build a feature, prototypes each on its own checkpoint, and recommends the one that actually works."
-tools = ["bash", "read_file", "write_file", "edit_file", "run_tests", "checkpoint", "rollback", "report"]
+description = "Proposes 2-3 ways to build a feature, implements each in its own parallel sandbox fork, and recommends the one that measurably works best."
+mode = "explore"
+max_approaches = 3
+tools = ["bash", "read_file", "write_file", "edit_file", "run_tests", "report"]
+planner_tools = ["bash", "read_file", "report"]
 host_tools = ["web_search"]
-max_steps = 45
+max_steps = 25
+planner_max_steps = 12
+min_findings = 2
+requires_patch = true
 toolchain = ["pip install -q pytest"]
 verify = "tests_pass"

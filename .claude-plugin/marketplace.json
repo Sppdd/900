@@ -1,0 +1,16 @@
+{
+  "name": "sandcoder",
+  "owner": {
+    "name": "sandcoder contributors"
+  },
+  "metadata": {
+    "description": "sandcoder: sandboxed specialist agents (security, tests, bug repro, research) for Claude Code, powered by Nebius Token Factory."
+  },
+  "plugins": [
+    {
+      "name": "sandcoder",
+      "source": "./plugin",
+      "description": "Sandboxed specialist agents for your coding agent, on Nebius Token Factory Sandboxes."
+    }
+  ]
+}

@@ -175,6 +175,7 @@ class Workspace:
     audit: list[dict[str, Any]] = field(default_factory=list)
     evidence: list[dict[str, Any]] = field(default_factory=list)
     report: dict[str, Any] | None = None
+    min_findings: int = 0
 
     def __post_init__(self) -> None:
         self.checkpoints.setdefault("start", self.snapshot)
@@ -261,7 +262,10 @@ class Workspace:
 
     async def _tool_report(self, **args: Any) -> str:
         try:
-            self.report = validate_report(args)
+            report = validate_report(args)
+            if len(report["findings"]) < self.min_findings:
+                raise ValueError(f"this skill requires at least {self.min_findings} findings; follow your method first")
         except ValueError as e:
             return f"error: invalid report ({e}); fix it and call report again"
+        self.report = report
         return "report accepted"

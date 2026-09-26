@@ -1,119 +1,137 @@
 # sandcoder
 
-Coding agents that **write, run, and test code inside [Nebius Token Factory Sandboxes](https://docs.tokenfactory.nebius.com/sandboxes/overview)**, driven by **NVIDIA Nemotron** models served by Token Factory's OpenAI-compatible inference API.
+**A panel of sandboxed specialist agents for your coding agent.** Claude Code, Codex or Cursor calls one MCP tool, and a security auditor, test writer, bug reproducer and feature researcher each fork the same snapshot of your repo in an isolated **Nebius Token Factory Sandbox**. They run real tools in parallel, driven by **NVIDIA Nemotron**, and return evidence: proof-of-concept tests, passing test patches, failing regression tests, and risk-rated diffs.
 
 **Track:** Coding and Agentic Engineering (Nebius x NVIDIA Global AI Hackathon)
 
 ```
- task + local project ──► sandbox snapshot ──► agent loop (LLM ⇄ tools) ──► verified by tests ──► export
-                               │
-                               ├── attempt 0 ─┐
-                               ├── attempt 1 ─┼── best-of-N: fork from the same snapshot, keep the winner
-                               └── attempt 2 ─┘
+your coding agent ──MCP──▶ sandcoder-mcp (local; holds keys, uploads repo minus secrets)
+                              │  Nemotron loops run here; sandboxes never see a key
+                              ▼
+                  cached toolchain snapshot → + repo + deps → git baseline
+                     ├─ fork: security-auditor   bandit/semgrep/pip-audit → PoC tests
+                     ├─ fork: test-writer        coverage → passing tests
+                     ├─ fork: bug-reproducer     bug report → failing regression test
+                     └─ fork: feature-researcher planner → one fork per approach → measured winner
+                              ▼
+                  verdicts + evidence + risk-rated diffs → your agent (never auto-applied)
 ```
 
-## Why sandboxes shape the design
+## A real run
 
-Token Factory Sandboxes (ConTree) are **immutable and branchable**: every command produces a new image version and old versions stay valid. sandcoder builds on that directly:
+On `examples/buggy-api` (a small API with planted flaws), with Nemotron 3 Super on Token Factory Sandboxes, three specialists ran in parallel (longest took 117 s):
 
-| Feature | How it uses branching |
+| Specialist | Result |
 |---|---|
-| `checkpoint` / `rollback` tools | The agent names a snapshot and jumps back to it when an approach fails. There's no undo logic, just a pointer swap. |
-| Read-only test runs | `run_tests` runs with `disposable=True`, so test artifacts never pollute the workspace. |
-| Best-of-N (`-n 3`) | N agents fork from one post-setup snapshot in parallel. Setup (e.g. `pip install`) runs once. |
-| Independent verification | After the agent calls `finish`, the harness re-runs the tests itself. The agent's claim of success doesn't count. |
+| security-auditor | **Medium: SQL injection** in `app/users.py:6`. It wrote a PoC test that failed on the original code and passed after its parameterized-query patch. |
+| test-writer | **+5 tests**, coverage **67% → 100%**, all passing (re-verified by the harness) |
+| bug-reproducer | **Failing regression test** for the off-by-one bulk discount (`>` vs `>=` at `pricing.py:10`) |
+
+The feature-researcher, asked to add `GET /orders.csv`, proposed stdlib `csv` and pandas. It implemented both in parallel sandbox forks (both passed tests) and recommended stdlib `csv`: the harness rated the pandas patch medium-risk because it adds a dependency.
+
+Every command a specialist ran is recorded as evidence, and each result links to a sandbox snapshot.
+
+## Install
+
+You need a Token Factory API key, a project id with Sandboxes enabled, and [`uv`](https://docs.astral.sh/uv/).
+
+```bash
+export NEBIUS_API_KEY=...        # Token Factory key (inference + sandboxes)
+export NEBIUS_PROJECT_ID=...     # Token Factory project with Sandboxes enabled
+export TAVILY_API_KEY=...        # optional: web search for feature-researcher
+```
+
+**Claude Code plugin** (MCP server + `sandbox-panel` skill + `/panel` command):
+```
+/plugin marketplace add Sppdd/900
+/plugin install sandcoder@sandcoder
+```
+
+**Claude Code, MCP only:**
+```bash
+claude mcp add sandcoder -e NEBIUS_API_KEY="$NEBIUS_API_KEY" -e NEBIUS_PROJECT_ID="$NEBIUS_PROJECT_ID" \
+  -- uvx --from git+https://github.com/Sppdd/900 sandcoder-mcp
+```
+
+**Codex** (`~/.codex/config.toml`) and **Cursor** (`.cursor/mcp.json`) use the same `uvx --from git+https://github.com/Sppdd/900 sandcoder-mcp` command. See the website (`site/`) for copy-paste snippets.
+
+Then ask your agent: *"check this repo before I open the PR"*, or use the prompts `panel_premerge`, `panel_repro`, `panel_research`.
+
+## MCP tools
+
+| Tool | Purpose |
+|---|---|
+| `panel_run(task, skills?, path?, test?, setup?, image?, skill_tasks?)` | Start specialists; returns `run_id` immediately (async) |
+| `panel_results(run_id, wait_seconds?)` | Verdicts, findings, test status, patch summaries, guard denials, tokens |
+| `panel_patch(run_id, skill)` | A specialist's diff with risk rating and reasons |
+| `panel_cancel(run_id)`, `panel_runs()`, `skills_list()` | Manage runs, list skills |
+
+Runs are stored in `~/.sandcoder/runs/<run_id>/` (`run.json` plus one `.diff` per skill).
 
 ## How Nemotron and Token Factory are used
 
-- **NVIDIA Nemotron 3 Super** (`nvidia/nemotron-3-super-120b-a12b`) is the default agent brain. Every agent step is a runtime tool-calling request to the Token Factory inference API (`llm.py`). Pass `--model` to use Nemotron 3 Ultra for harder tasks or Nano for cheap, fast attempts. `sandcoder models` lists the NVIDIA models your key can reach.
-- **Token Factory Sandboxes** run every command the model issues, in VM-isolated, snapshot-per-step environments (`sandbox.py`, via `contree-sdk`).
-- **What Token Factory speeds up:** setup runs once and every attempt forks from that snapshot, so best-of-N costs N agent loops, not N environment builds. A rollback is a pointer swap, not a rebuild.
+- **NVIDIA Nemotron 3 Super** (`nvidia/nemotron-3-super-120b-a12b`) drives every specialist's tool-calling loop through the Token Factory inference API. Override it with `SANDCODER_MODEL`. `sandcoder models` lists the NVIDIA models your key can reach.
+- **Token Factory Sandboxes** run every command:
+  - **Tagged toolchain image**, built once, so later runs skip installing scanners.
+  - **Immutable snapshots**, so each specialist forks the same prepared state and runs in parallel.
+  - **Checkpoint and rollback** inside a skill, e.g. the researcher trying several approaches.
+  - **Disposable runs** for tests and diffs.
+- **What Token Factory speeds up:** setup runs once per panel, not once per specialist, and repeat runs reuse the cached toolchain image. The expensive host model only reads short verdicts.
 
-## Setup
+## Safety
+
+1. **Isolation:** VM-isolated, disposable sandboxes with no credentials. Model and web-search calls run in the MCP process.
+2. **No secrets uploaded:** uploads respect `.gitignore` and always drop `.env*`, keys, `.npmrc`, `.pypirc`, tfstate and similar files (`sandbox.collect_local_files`).
+3. **Command guard** (`guard.check_command`): blocks exfiltration, `curl | sh`, env dumps, `~/.ssh`, reverse shells, miners and unknown hosts. Every command is logged.
+4. **Patch scanner** (`guard.scan_patch`): flags weakened tests, CI edits, dependency changes, network calls, `eval` and encoded blobs.
+5. **Results are data:** reports are schema-validated and length-capped. The plugin skill forbids following instructions in results and auto-applying patches.
+
+Layers 3–4 catch common attacks, not a determined adversary. Isolation and human review of diffs are the boundary.
+
+## Skills
+
+Each skill is a folder of data in `src/sandcoder/skills/<name>/`:
+- `SKILL.md`: the role and method.
+- `skill.toml`: tools, budgets, toolchain, and `preflight` commands. The harness runs the preflight commands itself and feeds their output to the agent, so scanners and coverage always run.
+
+Setting `mode = "explore"` (see `feature-researcher`) adds a `PLAN.md` planner. The harness then forks one sandbox per proposed approach, runs the implementers in parallel, and ranks them on measured tests, diff size and risk. Branching stays in the harness, so the model never has to manage checkpoints.
+
+Two harness checks keep reports honest:
+- `min_findings` rejects a thin report.
+- `requires_patch` downgrades a "pass" with an empty diff to "incomplete".
+
+Add your own skills via `SANDCODER_SKILLS_PATH`. Each result reports the skill's content hash.
+
+## CLI
 
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"
-
-cp .env.example .env    # then fill in, and: set -a; . ./.env; set +a
+sandcoder panel "pre-merge check" -w examples/buggy-api -s security-auditor,test-writer,bug-reproducer \
+  -t "python -m pytest -q" --skill-task bug-reproducer=@examples/buggy-api/BUG_REPORT.md
+sandcoder skills                       # list specialists
+sandcoder run @examples/roman/TASK.md -w examples/roman -t "python -m unittest -q test_roman" -n 3   # single coding agent, best-of-N
+sandcoder models                       # NVIDIA models on Token Factory
 ```
 
-Credentials:
+## Website
 
-- `NEBIUS_API_KEY`: used for both inference and sandboxes.
-- `CONTREE_PROJECT` (or `NEBIUS_PROJECT_ID`): your sandbox project id.
-- Or run `contree auth` once (`pip install contree-cli`). The sandbox client falls back to that profile when `NEBIUS_API_KEY` is unset.
-- `SANDCODER_MODEL`: optional; defaults to `nvidia/nemotron-3-super-120b-a12b`.
+`site/` holds a static landing page (features, live-run replay, install, MCP reference), served by nginx on port 8080.
+`deploy/deploy-site.sh` builds the image, pushes it to Nebius Container Registry and creates a Nebius Serverless AI Endpoint. It pins a CPU platform, because the endpoint default is an H100 GPU. Use `DRY_RUN=1` first.
 
-## Usage
+## Development
 
 ```bash
-# Solve a task, verified by a test command, and export the result
-sandcoder run @examples/roman/TASK.md -w examples/roman \
-  --image python:3.12-slim \
-  -t "python -m unittest -q test_roman" \
-  -o out/roman --trace trace.json
-
-# Best-of-3: parallel attempts forked from one snapshot
-sandcoder run "Fix the failing test in tests/test_api.py" -w ./myrepo \
-  --setup "pip install -e .[dev]" -t "pytest -q" -n 3 -o out/fix
-
-# Developer tool: run one command against a project in a fresh sandbox
-sandcoder exec -w ./myrepo --image python:3.12-slim -- python -c "import sys; print(sys.version)"
-
-# List images available to your project / NVIDIA models on Token Factory
-sandcoder images
-sandcoder models
+python3 -m venv .venv && . .venv/bin/activate && pip install -e ".[dev]"
+pytest -q        # offline: scripted model + local backend
 ```
 
-Exit code is `0` only when the final snapshot passes the test command.
+Layout:
+- `src/sandcoder/`:
+  - `sandbox.py` (Token Factory Sandboxes + local test backend)
+  - `panel.py` (runs)
+  - `agent.py`, `tools.py`, `guard.py`, `skills/`, `web.py`
+  - `mcp_server.py`, `cli.py`
+- `plugin/`: Claude Code plugin.
+- `.claude-plugin/marketplace.json`: plugin marketplace entry.
+- `examples/`: demo projects.
 
-`--local` swaps in an **unisolated** host backend with the same snapshot semantics. It exists for offline development and the test suite. Never point it at untrusted tasks.
-
-## Library use
-
-```python
-import asyncio
-from pathlib import Path
-
-from sandcoder import CodingAgent, ContreeSandbox, OpenAIChat, best_of_n
-from sandcoder.sandbox import collect_local_files
-
-async def main():
-    async with ContreeSandbox.from_env() as sb:
-        base = await sb.start("python:3.12-slim", collect_local_files("examples/roman"))
-        model = OpenAIChat()  # Token Factory, $SANDCODER_MODEL
-        make = lambda i: CodingAgent(model.with_temperature(0.2 + 0.3 * i), sb,
-                                     test_command="python -m unittest -q test_roman")
-        best, _ = await best_of_n(make, open("examples/roman/TASK.md").read(), base, n=3)
-        print(best.status, best.summary)
-        await sb.export(best.snapshot, Path("out"))
-
-asyncio.run(main())
-```
-
-Extension points:
-
-- **`Sandbox`** (`sandbox.py`): implement `start/exec/write/read/export` to add a backend.
-- **`ChatModel`** (`llm.py`): any object with `async complete(messages, tools) -> Reply`.
-- **Tools** (`tools.py`): add a JSON schema to `TOOL_SCHEMAS` and a `_tool_<name>` method on `Workspace`.
-
-## Layout
-
-```
-src/sandcoder/
-  sandbox.py   Sandbox ABC, ContreeSandbox (Token Factory), LocalSandbox (tests only)
-  tools.py     tool schemas + Workspace (current snapshot, checkpoints)
-  agent.py     CodingAgent loop and independent verification
-  search.py    best_of_n over forked snapshots
-  llm.py       OpenAI-compatible client, defaults to Token Factory
-  cli.py       sandcoder run | exec | images | models
-examples/roman task with failing unittest suite
-tests/         offline tests (scripted model + local backend)
-```
-
-## Notes
-
-- Network access inside sandboxes depends on your project's configuration. If `--setup "pip install ..."` can't reach PyPI, use an image that already has your dependencies (build one with `contree build`).
-- Files are uploaded to `/workspace`. `.git`, virtualenvs, `node_modules`, and caches are skipped.
-- `export` needs `tar` in the image.
+MIT licensed.

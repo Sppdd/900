@@ -225,3 +225,78 @@ async def test_mcp_async_flow(project, tmp_path):
     bad = await call("panel_run", {"task": "x", "path": str(project), "skills": ["nope"]})
     assert "unknown skills" in bad["error"]
     await sb.close()
+
+
+async def test_preflight_feeds_task(tmp_path):
+    from sandcoder.panel import run_preflight, skill_task
+
+    async with LocalSandbox() as sb:
+        snap = await sb.start("x", {"a.txt": (b"hello", 0o644)})
+        pre = await run_preflight(sb, snap, ["cat a.txt", "exit 3"])
+    assert pre[0] == ("cat a.txt", 0, "hello") and pre[1][1] == 3
+    text = skill_task(PanelSpec(task="t", skill_tasks={"bug-reproducer": "the bug"}), "bug-reproducer", pre)
+    assert "the bug" in text and "[exit 3]" in text and "untrusted" in text
+
+
+async def test_min_findings_enforced():
+    from sandcoder.tools import Workspace
+
+    async with LocalSandbox() as sb:
+        ws = Workspace(sb, await sb.start("x"), min_findings=2)
+        out = await ws.call("report", json.dumps({"verdict": "pass", "summary": "s", "findings": [{"title": "a", "severity": "info", "detail": "d"}]}))
+        assert "at least 2 findings" in out and ws.report is None
+        two = [{"title": t, "severity": "info", "detail": "d"} for t in "ab"]
+        assert await ws.call("report", json.dumps({"verdict": "pass", "summary": "s", "findings": two})) == "report accepted"
+
+
+async def test_pass_without_patch_is_downgraded(project, tmp_path):
+    scripts = {"test engineer": [("report", {"verdict": "pass", "summary": "Added 10 tests."})]}
+    run = Run(id="r2", spec=PanelSpec(task="x", path=str(project), skills=["test-writer"]))
+    async with LocalSandbox() as sb:
+        run = await run_panel(run, sb, RouterModel(scripts), install_toolchain=False)
+    v = run.verdicts["test-writer"]
+    assert v["verdict"] == "incomplete" and v["summary"].startswith("[harness]")
+    assert v["trace"][0]["tool"] == "report"
+
+
+class ExploreModel:
+    """Planner proposes approaches A and B; A implements a passing feature, B breaks the tests."""
+
+    def __init__(self):
+        self.scripts = {
+            "plan": [("report", {"verdict": "pass", "summary": "two ways", "findings": [
+                {"title": "Approach: A", "severity": "info", "detail": "add mul()"},
+                {"title": "Approach: B", "severity": "info", "detail": "broken"},
+            ]})],
+            "A": [
+                ("write_file", {"path": "feat.py", "content": "def mul(a, b):\n    return a * b\n"}),
+                ("write_file", {"path": "test_feat.py", "content": "from feat import mul\n\ndef test_mul():\n    assert mul(2, 3) == 6\n"}),
+                ("report", {"verdict": "pass", "summary": "mul added"}),
+            ],
+            "B": [
+                ("write_file", {"path": "test_feat.py", "content": "def test_broken():\n    assert False\n"}),
+                ("report", {"verdict": "pass", "summary": "claims success"}),
+            ],
+        }
+
+    async def complete(self, messages, tools):
+        system, user = messages[0]["content"], messages[1]["content"]
+        key = "plan" if "You plan how" in system else ("A" if "approach: Approach: A" in user else "B")
+        await asyncio.sleep(0)
+        if not self.scripts[key]:
+            return Reply(content="done")
+        name, args = self.scripts[key].pop(0)
+        return Reply(content=None, tool_calls=[ToolCall(f"c{len(messages)}", name, json.dumps(args))], usage={"prompt_tokens": 5})
+
+
+async def test_explore_mode_picks_measured_winner(project, tmp_path):
+    spec = PanelSpec(task="add multiply", path=str(project), skills=["feature-researcher"], test=f"{PY} -m pytest -q -p no:cacheprovider")
+    run = Run(id="r3", spec=spec)
+    async with LocalSandbox() as sb:
+        run = await run_panel(run, sb, ExploreModel(), install_toolchain=False)
+    v = run.verdicts["feature-researcher"]
+    assert v["verdict"] == "pass", v
+    assert [a["works"] for a in v["approaches"]] == [True, False]  # B's claim of success is not trusted
+    assert "RECOMMENDED" in v["findings"][0]["title"] and "RECOMMENDED" not in v["findings"][1]["title"]
+    assert "feat.py" in v["patch"]["files"] and v["tests_passed"] is True
+    assert v["tokens"]["prompt_tokens"] == 5 * 6
